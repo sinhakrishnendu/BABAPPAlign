@@ -7,7 +7,7 @@ package:
 
 source:
   url: https://github.com/sinhakrishnendu/BABAPPAlign/archive/refs/tags/v{{ version }}.tar.gz
-  sha256: PLACEHOLDER_SHA256
+  sha256: c9268bee2f3bf2ade2a50f5ad61ec081606339a048a4ac41a284b5fd085c80b7  v1.0.0.tar.gz
 
 build:
   number: 0
