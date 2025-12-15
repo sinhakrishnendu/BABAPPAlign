@@ -125,3 +125,24 @@ def batched_score(model, A: torch.Tensor, B: torch.Tensor,
                 S[i, j] = float(v)
 
     return S
+
+def cli():
+    """
+    CLI entrypoint for babappascore.
+
+    This is intentionally minimal to allow
+    `babappalign --help` and `babappascore --help`
+    to function without triggering heavy imports.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="BABAPPAScore: learned residue–residue scoring model"
+    )
+    parser.add_argument(
+        "--help-only",
+        action="store_true",
+        help="Show this help message and exit",
+    )
+    parser.parse_args()
+
