@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17934125.svg)](https://doi.org/10.5281/zenodo.17934125)
+
 # BABAPPAlign
 
 **BABAPPAlign** is a deep learning–based **progressive multiple sequence alignment (MSA) engine** for protein sequences.
