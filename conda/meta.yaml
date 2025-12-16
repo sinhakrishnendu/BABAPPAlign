@@ -43,7 +43,7 @@ about:
   home: https://github.com/sinhakrishnendu/BABAPPAlign
   license: MIT
   license_file: LICENSE
-  summary: "Deep learning–based progressive multiple sequence alignment engine with learned residue scoring"
+  summary: "Deep learning–based progressive multiple sequence alignment engine with learned residue scoring BABAPPAScore"
 
 extra:
   keywords:
