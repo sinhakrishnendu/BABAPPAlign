@@ -10,9 +10,7 @@ Progressive MSA engine with:
   - BABAPPAScore learned scoring (MANDATORY)
   - UPGMA guide tree
   - Profile–profile alignment (column mean embeddings)
-  - Global Gotoh affine DP
-
-This version is DOWNSTREAM-SAFE.
+  - Global Gotoh affine DPT
 """
 
 from __future__ import annotations
