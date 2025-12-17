@@ -1,5 +1,5 @@
 {% set name = "babappalign" %}
-{% set version = "1.0.1" %}
+{% set version = "1.0.2" %}
 
 package:
   name: {{ name }}
@@ -29,23 +29,29 @@ requirements:
     - pandas
     - biopython
     - tqdm
-
-    # Explicit ML stack (architecture-dependent)
     - pytorch >=1.12
     - transformers >=4.30
     - fair-esm
 
 test:
   commands:
+    # --- CRITICAL: redirect all caches away from /tmp ---
+    - export HF_HOME="$PWD/hf_home"
+    - export TRANSFORMERS_CACHE="$PWD/hf_home"
+    - export XDG_CACHE_HOME="$PWD/hf_home"
+
+    # sanity check only (no heavy downloads)
     - babappalign --help
 
 about:
   home: https://github.com/sinhakrishnendu/BABAPPAlign
   license: MIT
   license_file: LICENSE
-  summary: "Deep learning–based progressive multiple sequence alignment engine with learned residue scoring BABAPPAScore"
+  summary: "Deep learning–based progressive multiple sequence alignment engine with learned residue scoring"
 
 extra:
+  skip-lints:
+      - should_be_noarch_generic
   keywords:
     - multiple-sequence-alignment
     - protein-alignment

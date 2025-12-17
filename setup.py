@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="babappalign",
-    version="1.0.1",
+    version="1.0.2",
     description="Deep learning–based progressive multiple sequence alignment engine",
     long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",

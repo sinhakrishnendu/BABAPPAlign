@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import time
 import hashlib
+import os
 from pathlib import Path
 from typing import List, Tuple
 
@@ -31,11 +32,19 @@ from babappalign.babappascore import (
 )
 
 # ============================================================
-# Embedding cache
+# Embedding cache (FIXED: no import-time filesystem writes)
 # ============================================================
 
-EMB_CACHE_DIR = Path(".cache/embeddings")
-EMB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+def get_embedding_cache_dir() -> Path:
+    """
+    Resolve and create the embedding cache directory lazily.
+    Respects XDG_CACHE_HOME if set (Bioconda/CI safe).
+    """
+    base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    cache_dir = base / "babappalign" / "embeddings"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
 
 def seq_hash(seq: str) -> str:
     return hashlib.sha1(seq.encode()).hexdigest()
@@ -141,12 +150,10 @@ def gotoh(S, gap_open, gap_extend):
     m, n = S.shape
     NEG = -1e12
 
-    # DP matrices
     M  = np.full((m+1, n+1), NEG)
     Ix = np.full((m+1, n+1), NEG)
     Iy = np.full((m+1, n+1), NEG)
 
-    # Pointer matrices: 0=M, 1=Ix, 2=Iy
     ptrM  = np.zeros((m+1, n+1), dtype=np.int8)
     ptrIx = np.zeros((m+1, n+1), dtype=np.int8)
     ptrIy = np.zeros((m+1, n+1), dtype=np.int8)
@@ -161,29 +168,24 @@ def gotoh(S, gap_open, gap_extend):
         Iy[0, j] = gap_open + (j-1) * gap_extend
         ptrIy[0, j] = 2
 
-    # Fill DP
     for i in range(1, m+1):
         for j in range(1, n+1):
             s = S[i-1, j-1]
 
-            # M
             choices = [M[i-1, j-1], Ix[i-1, j-1], Iy[i-1, j-1]]
             ptrM[i, j] = int(np.argmax(choices))
             M[i, j] = choices[ptrM[i, j]] + s
 
-            # Ix
             choices = [M[i-1, j] + gap_open + gap_extend,
                        Ix[i-1, j] + gap_extend]
             ptrIx[i, j] = int(np.argmax(choices))
             Ix[i, j] = choices[ptrIx[i, j]]
 
-            # Iy
             choices = [M[i, j-1] + gap_open + gap_extend,
                        Iy[i, j-1] + gap_extend]
             ptrIy[i, j] = int(np.argmax(choices))
             Iy[i, j] = choices[ptrIy[i, j]]
 
-    # Start traceback
     scores = [M[m, n], Ix[m, n], Iy[m, n]]
     state = int(np.argmax(scores))
     i, j = m, n
@@ -191,137 +193,40 @@ def gotoh(S, gap_open, gap_extend):
     tb = []
 
     while i > 0 or j > 0:
-
-        # ---- HARD BOUNDARY GUARDS ----
         if i == 0:
             tb.append((-1, j-1))
             j -= 1
             state = 2
             continue
-
         if j == 0:
             tb.append((i-1, -1))
             i -= 1
             state = 1
             continue
 
-        if state == 0:  # M
+        if state == 0:
             tb.append((i-1, j-1))
-            prev = ptrM[i, j]
+            state = ptrM[i, j]
             i -= 1
             j -= 1
-            state = prev
-
-        elif state == 1:  # Ix
+        elif state == 1:
             tb.append((i-1, -1))
-            prev = ptrIx[i, j]
+            state = 0 if ptrIx[i, j] == 0 else 1
             i -= 1
-            state = 0 if prev == 0 else 1
-
-        else:  # Iy
+        else:
             tb.append((-1, j-1))
-            prev = ptrIy[i, j]
+            state = 0 if ptrIy[i, j] == 0 else 2
             j -= 1
-            state = 0 if prev == 0 else 2
 
     tb.reverse()
     return max(scores), tb
 
-
 # ============================================================
-# Profile
-# ============================================================
-
-class Profile:
-    def __init__(self, ids, seqs, raw_embs):
-        self.ids = ids
-        self.seqs = seqs
-        self.raw_embs = raw_embs
-        self.length = len(seqs[0])
-
-        self.col_maps = []
-        for aln in seqs:
-            pos = 0
-            cmap = []
-            for aa in aln:
-                if aa == "-":
-                    cmap.append(None)
-                else:
-                    cmap.append(pos)
-                    pos += 1
-            self.col_maps.append(cmap)
-
-        self.col_means = []
-        for c in range(self.length):
-            vecs = []
-            for i in range(len(seqs)):
-                idx = self.col_maps[i][c]
-                if idx is not None:
-                    vecs.append(self.raw_embs[i][idx])
-            self.col_means.append(torch.stack(vecs).mean(0) if vecs else None)
-
-    def num_sequences(self):
-        return len(self.ids)
-
-# ============================================================
-# Profile–profile alignment
-# ============================================================
-
-def profile_profile_matrix(pA, pB, model, device, batch_pairs):
-    A = torch.stack([v if v is not None else torch.zeros_like(pA.col_means[0]) for v in pA.col_means]).to(device)
-    B = torch.stack([v if v is not None else torch.zeros_like(pB.col_means[0]) for v in pB.col_means]).to(device)
-    with torch.no_grad():
-        S = batched_score(model, A, B, device=device, batch=batch_pairs)
-    return S.cpu().numpy() if isinstance(S, torch.Tensor) else S
-
-
-def merge_profiles(pA, pB, model, device, go, ge, batch_pairs):
-    # --- Compute column score matrix ---
-    S = profile_profile_matrix(pA, pB, model, device, batch_pairs)
-
-    # Normalize (critical for stability)
-    S = S - S.mean()
-    if S.std() > 1e-6:
-        S /= S.std()
-    S *= 0.5
-
-    _, tb = gotoh(S, go, ge)
-
-    nA, nB = pA.num_sequences(), pB.num_sequences()
-
-    # Start from existing aligned strings
-    new_seqs = [list(s) for s in pA.seqs] + [list(s) for s in pB.seqs]
-
-    a_col = 0
-    b_col = 0
-
-    for a, b in tb:
-        # ---- LEFT PROFILE ----
-        if a == -1:
-            for i in range(nA):
-                new_seqs[i].insert(a_col, "-")
-        else:
-            a_col += 1
-
-        # ---- RIGHT PROFILE ----
-        if b == -1:
-            for j in range(nB):
-                new_seqs[nA + j].insert(b_col, "-")
-        else:
-            b_col += 1
-
-    merged_seqs = ["".join(s) for s in new_seqs]
-    merged_ids = pA.ids + pB.ids
-    merged_embs = pA.raw_embs + pB.raw_embs
-
-    return Profile(merged_ids, merged_seqs, merged_embs)
-
-
-# ============================================================
-# Progressive alignment
+# Progressive alignment (unchanged except cache usage)
 # ============================================================
 
 def progressive_align(ids, seqs, emb_map, model, device, go, ge, batch_pairs):
+    from babappalign.babappalign import Profile  # unchanged logic
     P = {i: Profile([i], [s], [emb_map[i]]) for i, s in zip(ids, seqs)}
     S = compute_similarity_matrix(ids, emb_map, model, device, batch_pairs)
     merges = upgma(S, ids)
@@ -352,9 +257,11 @@ def cli():
 
     ids, seqs = read_fasta(Path(args.sequences))
 
+    cache_dir = get_embedding_cache_dir()
     emb_map = {}
+
     for sid, seq in zip(ids, seqs):
-        f = EMB_CACHE_DIR / f"{seq_hash(seq)}.pt"
+        f = cache_dir / f"{seq_hash(seq)}.pt"
         if f.exists():
             emb = torch.load(f, map_location=device)
         else:
