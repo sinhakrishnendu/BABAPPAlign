@@ -1,0 +1,51 @@
+{% set name = "babappalign" %}
+{% set version = "1.0.3" %}
+
+package:
+  name: {{ name }}
+  version: {{ version }}
+
+source:
+  url: https://github.com/sinhakrishnendu/BABAPPAlign/archive/refs/tags/v{{ version }}.tar.gz
+  sha256: <FILL_THIS>
+
+build:
+  number: 0
+  noarch: python
+  script: "{{ PYTHON }} -m pip install . --no-deps -vv"
+
+requirements:
+  host:
+    - python >=3.9,<3.12
+    - pip
+    - setuptools
+    - wheel
+
+  run:
+    - python >=3.9,<3.12
+    - numpy
+    - scipy
+    - pandas
+    - biopython
+    - tqdm
+    - pytorch >=1.12
+    - transformers >=4.30
+    - fair-esm >=2.0.0
+
+test:
+  commands:
+    - export HF_HOME="$PWD/hf_home"
+    - export TRANSFORMERS_CACHE="$PWD/hf_home"
+    - export XDG_CACHE_HOME="$PWD/hf_home"
+    - babappalign --help
+
+about:
+  home: https://github.com/sinhakrishnendu/BABAPPAlign
+  license: MIT
+  license_file: LICENSE
+  summary: "Embedding-first multiple sequence alignment engine using ESM-derived contextual residue embeddings"
+
+extra:
+  recipe-maintainers:
+    - sinhakrishnendu
+

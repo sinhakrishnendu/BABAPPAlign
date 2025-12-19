@@ -1,0 +1,34 @@
+Ultra-robust BABAPPAlign vs MAFFT comparison
+Run date: 2025-12-19 21:17:12.911439
+
+=== TEST: identity ===
+Δgap=+0.000, Δid=+0.000 → IDENTICAL
+
+=== TEST: extreme_length ===
+Δgap=+0.000, Δid=+0.000 → IDENTICAL
+
+=== TEST: all_gap_bait ===
+Δgap=+0.243, Δid=+0.000 → BABA-more-gappy
+
+=== TEST: single_anchor ===
+Δgap=+0.000, Δid=+0.000 → IDENTICAL
+
+=== TEST: motif_shift ===
+Δgap=+0.000, Δid=+0.000 → IDENTICAL
+
+=== TEST: repeat_phase ===
+Δgap=+0.000, Δid=-0.091 → MAFFT-like
+
+=== TEST: scrambled ===
+Δgap=-0.158, Δid=-0.190 → BABA-more-conservative
+
+=== TEST: gap_storm ===
+Δgap=+0.278, Δid=-0.009 → BABA-more-gappy
+
+=== TEST: near_identity_noise ===
+Δgap=+0.000, Δid=+0.000 → IDENTICAL
+
+=== TEST: random_null ===
+Δgap=-0.221, Δid=-0.065 → BABA-more-conservative
+
+=== END ULTRA-ROBUST COMPARISON ===
