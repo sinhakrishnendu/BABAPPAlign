@@ -77,7 +77,7 @@ def embed_sequence(seq: str, device: torch.device) -> torch.Tensor:
 # Learned scorer model
 # ============================================================
 
-ddef safe_load_model(model_path, device, version="v1.0.4"):
+def safe_load_model(model_path, device, version="v1.0.4"):
     """
     Load BABAPPAScore model.
 
