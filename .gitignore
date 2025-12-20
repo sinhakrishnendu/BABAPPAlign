@@ -4,3 +4,20 @@ compare_runs/
 __pycache__/
 *.pyc
 babappalign/models/
+# Python build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+build/
+dist/
+
+# Test outputs
+adversarial_runs/
+results/
+data/
+*.dnd
+
+# Conda
+.conda/
