@@ -15,8 +15,6 @@ accuracy while remaining **fully usable on CPU-only systems**.
 - 🧬 Progressive multiple sequence alignment (MSA)
 - 🧠 Learned pairwise scoring model (BABAPPAScore)
 - 🔤 Uses pretrained **ESM2 residue embeddings**
-- 🌳 UPGMA guide tree construction
-- 📐 Profile–profile alignment with affine gap penalties
 - 💻 **Runs on CPU-only systems**
 - 🚀 Optional GPU acceleration (auto-detected)
 - ♻️ Cached embeddings for fast, repeated runs
