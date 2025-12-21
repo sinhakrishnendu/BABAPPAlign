@@ -10,19 +10,18 @@ accuracy while remaining **fully usable on CPU-only systems**.
 
 ---
 
-## ✨ Key Features
+## Key Features
 
-- 🧬 Progressive multiple sequence alignment (MSA)
-- 🧠 Learned pairwise scoring model (BABAPPAScore)
-- 🔤 Uses pretrained **ESM2 residue embeddings**
-- 💻 **Runs on CPU-only systems**
-- 🚀 Optional GPU acceleration (auto-detected)
-- ♻️ Cached embeddings for fast, repeated runs
-- 📦 Distributed via **Bioconda**
+- Progressive multiple sequence alignment (MSA)
+- Learned pairwise scoring model (BABAPPAScore)
+- Uses pretrained **ESM2 residue embeddings**
+- Can Runs on CPU-only systems
+- Optional GPU acceleration
+- Distributed via **Bioconda**
 
 ---
 
-## 📦 Installation
+## Installation
 
 ### Install from Bioconda (recommended)
 
@@ -34,7 +33,7 @@ This installs a **CPU-compatible version**. No GPU or CUDA is required.
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Basic usage
 
@@ -50,7 +49,7 @@ babappalign input.fasta --out output.aln.fasta
 
 ---
 
-## 🧠 How BABAPPAlign Works
+## How BABAPPAlign Works
 
 1. **Embedding generation**  
    Protein sequences are converted into residue-level embeddings using ESM2.
@@ -65,11 +64,6 @@ babappalign input.fasta --out output.aln.fasta
    Profiles are aligned using dynamic programming with affine gap penalties.
 
 ---
-
-## ♻️ Cached Embeddings
-
-Embedding generation is computationally expensive. BABAPPAlign therefore **caches embeddings on disk**
-and reuses them automatically.
 
 ### First run
 
@@ -87,7 +81,7 @@ Cached embeddings can be generated once on a GPU machine and reused on any compu
 
 ---
 
-## 💻 CPU vs GPU Execution
+## CPU vs GPU Execution
 
 | Component | CPU | GPU |
 |---------|-----|-----|
@@ -101,7 +95,7 @@ Alignment accuracy is identical on CPU and GPU.
 
 ---
 
-## 📂 Input Requirements
+## Input Requirements
 
 - Protein sequences only
 - FASTA format
@@ -109,7 +103,7 @@ Alignment accuracy is identical on CPU and GPU.
 
 ---
 
-## 🛠 Command-Line Options
+## Command-Line Options
 
 ```bash
 babappalign --help
@@ -122,19 +116,19 @@ Common options:
 
 ---
 
-## 📜 License
+## License
 
 MIT License. See the `LICENSE` file for details.
 
 ---
 
-## 🧾 Citation
+## Citation
 
 Manuscript in preparation.
 
 ---
 
-## 👨‍💻 Author & Repository
+## Author & Repository
 
 - **Author:** Krishnendu Sinha  
 - **GitHub:** https://github.com/sinhakrishnendu/BABAPPAlign  
