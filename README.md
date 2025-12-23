@@ -1,23 +1,31 @@
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17934124.svg)](https://doi.org/10.5281/zenodo.17934124)
-
 # BABAPPAlign
 
-**BABAPPAlign** is a deep learning–based **progressive multiple sequence alignment (MSA) engine** for protein sequences.
-It integrates pretrained protein language model embeddings with a learned pairwise scoring function to improve alignment
-accuracy while remaining **fully usable on CPU-only systems**.
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17934124.svg)](https://doi.org/10.5281/zenodo.17934124)
 
-> GPU acceleration is optional and used only for performance, not correctness.
+## Overview
+
+**BABAPPAlign** is an embedding-first **progressive multiple sequence alignment (MSA) engine** for protein sequences.
+It integrates pretrained protein language model embeddings with a **learned neural residue–residue scoring function**
+within a **classical, exact affine-gap dynamic programming framework**.
+
+The method is designed to improve alignment accuracy while remaining **fully functional on CPU-only systems**.
+GPU acceleration is optional and affects performance only, not correctness.
 
 ---
 
-## Key Features
+## Key features
 
 - Progressive multiple sequence alignment (MSA)
-- Learned pairwise scoring model (BABAPPAScore)
-- Uses pretrained **ESM2 residue embeddings**
-- Can Runs on CPU-only systems
-- Optional GPU acceleration
-- Distributed via **Bioconda**
+- Learned residue–residue scoring model (BABAPPAScore)
+- Uses pretrained ESM2 residue embeddings
+- Data-driven guide tree construction using Neighbor Joining (NJ)
+- Optional residue-level bootstrap with majority-rule consensus topology
+- True affine-gap dynamic programming (Gotoh algorithm)
+- Symmetric profile–profile alignment
+- Fully functional on CPU-only systems
+- Optional GPU acceleration for faster embedding generation and scoring
+- Automatic caching of model weights
+- Distributed via Bioconda
 
 ---
 
@@ -29,90 +37,117 @@ accuracy while remaining **fully usable on CPU-only systems**.
 conda install -c bioconda babappalign
 ```
 
-This installs a **CPU-compatible version**. No GPU or CUDA is required.
+This installs a CPU-compatible version of BABAPPAlign.
+No GPU, CUDA, or special hardware is required.
 
 ---
 
-## Quick Start
+## Quick start
 
 ### Basic usage
 
 ```bash
-babappalign input.fasta > output.aln.fasta
+babappalign input.fasta -o output.aln.fasta
 ```
 
-### Explicit output file
-
-```bash
-babappalign input.fasta --out output.aln.fasta
-```
+On first use, the pretrained scoring model is downloaded automatically.
 
 ---
 
-## How BABAPPAlign Works
+## How BABAPPAlign works
 
-1. **Embedding generation**  
-   Protein sequences are converted into residue-level embeddings using ESM2.
+1. **Residue embedding**  
+   Each protein sequence is converted into residue-level embeddings using a pretrained ESM2 model.
 
-2. **Pairwise scoring**  
-   A learned neural network model computes pairwise similarity scores between residues.
+2. **Guide tree construction**  
+   Sequence-level embeddings are obtained by pooling residue embeddings.
+   Pairwise distances are defined using cosine dissimilarity, and a guide tree is inferred using the
+   Neighbor Joining (NJ) algorithm.
+   Optionally, residue-level bootstrapping can be used to construct a majority-rule consensus tree.
 
-3. **Guide tree construction**  
-   UPGMA is used to build a guide tree from learned distances.
+3. **Learned residue scoring**  
+   Residue compatibility is evaluated using a pretrained neural scoring model (BABAPPAScore),
+   which replaces traditional substitution matrices.
 
 4. **Progressive alignment**  
-   Profiles are aligned using dynamic programming with affine gap penalties.
+   Sequences and profiles are progressively aligned following the guide tree using
+   exact affine-gap dynamic programming (Gotoh), with symmetric profile–profile alignment.
+
+The guide tree is used as a computational heuristic and is not interpreted as a phylogeny.
 
 ---
 
-### First run
+## Model weights and automatic download
 
-```bash
-babappalign input.fasta
+BABAPPAlign relies on a pretrained neural residue–residue scoring model (`babappascore.pt`).
+Due to its size, the model weights are not bundled with the software package.
+
+### Automatic model retrieval
+
+When BABAPPAlign is run for the first time, the pretrained scoring model is automatically downloaded
+from the official GitHub release corresponding to the installed version.
+The model file is cached locally and reused for subsequent runs.
+
+No manual download or configuration is required.
+
+### Cache location
+
+By default, the model is stored under the user cache directory:
+
+```
+~/.cache/babappalign/models/babappascore.pt
 ```
 
-### Subsequent runs
+The cache location follows the XDG base directory specification where applicable.
+
+### Offline and custom models
+
+Users may optionally supply a local model file:
 
 ```bash
-babappalign input.fasta --embedding-dir embeddings/
+babappalign input.fasta -o output.aln.fasta --model /path/to/babappascore.pt
 ```
 
-Cached embeddings can be generated once on a GPU machine and reused on any computer.
+This is useful for offline environments, custom-trained models, or reproducibility experiments.
 
 ---
 
-## CPU vs GPU Execution
+## CPU and GPU execution
+
+BABAPPAlign produces identical alignments on CPU and GPU.
+GPU acceleration is used only to improve performance.
 
 | Component | CPU | GPU |
 |---------|-----|-----|
-| MSA logic | ✅ | ✅ |
-| Pairwise scoring | ✅ | ✅ |
-| Guide tree | ✅ | ✅ |
-| Progressive alignment | ✅ | ✅ |
-| Embedding generation | ⚠️ Slow | 🚀 Fast |
-
-Alignment accuracy is identical on CPU and GPU.
+| Guide tree construction | Yes | Yes |
+| Progressive alignment (DP) | Yes | Yes |
+| Learned scoring | Yes | Yes |
+| Embedding generation | Slower | Faster |
 
 ---
 
-## Input Requirements
+## Input requirements
 
-- Protein sequences only
-- FASTA format
-- No strict length or count limit (performance depends on hardware)
+- Protein sequences only  
+- FASTA format  
+- No strict limits on sequence length or number (runtime depends on hardware)
 
 ---
 
-## Command-Line Options
+## Command-line interface
 
 ```bash
 babappalign --help
 ```
 
-Common options:
-- `--out FILE` : output alignment file
-- `--embedding-dir DIR` : use cached embeddings
-- `--cpu-only` : force CPU execution
+Key options include:
+
+- `-o, --output FILE` : output alignment file  
+- `--model FILE` : use a local scoring model  
+- `--bootstrap N` : number of bootstrap replicates for guide tree construction  
+- `--gap-open FLOAT` : gap opening penalty  
+- `--gap-extend FLOAT` : gap extension penalty  
+- `--device {cpu,cuda}` : select execution device  
 
 ---
 
@@ -128,11 +163,7 @@ Manuscript in preparation.
 
 ---
 
-## Author & Repository
+## Author and repository
 
 - **Author:** Krishnendu Sinha  
 - **GitHub:** https://github.com/sinhakrishnendu/BABAPPAlign  
-
----
-
-**BABAPPAlign** is a portable, CPU-friendly MSA engine with optional GPU acceleration.

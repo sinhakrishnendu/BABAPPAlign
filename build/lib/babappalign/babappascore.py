@@ -77,49 +77,53 @@ def embed_sequence(seq: str, device: torch.device) -> torch.Tensor:
 # Learned scorer model
 # ============================================================
 
-def safe_load_model(model_path, device):
-    import os
-    import torch
-    from importlib import resources
+def safe_load_model(model_path, device, version="v1.0.3"):
+    """
+    Load BABAPPAScore model.
+
+    If model_path is None, the pretrained scorer is downloaded once
+    from the GitHub release and cached under the XDG cache.
+    """
+
     from babappalign.pairwise_model import PairwiseScorer
+    import urllib.request
 
     # -------------------------------------------------
     # Resolve model path
     # -------------------------------------------------
-    if model_path is not None:
-        path = model_path
-    else:
-        with resources.path("babappalign.models", "babappascore.pt") as p:
-            path = str(p)
+    if model_path is None:
+        cache_dir = get_cache_dir("models")
+        path = cache_dir / "babappascore.pt"
 
-    if not os.path.exists(path):
+        if not path.exists():
+            url = (
+                "https://github.com/sinhakrishnendu/BABAPPAlign/"
+                f"releases/download/{version}/babappascore.pt"
+            )
+            print("[info] Downloading BABAPPAScore weights...")
+            urllib.request.urlretrieve(url, path)
+    else:
+        path = Path(model_path)
+
+    if not path.exists():
         raise RuntimeError(
             f"BABAPPAScore model not found at {path}. "
             "Learned scoring is mandatory."
         )
 
     # -------------------------------------------------
-    # Reconstruct model architecture
+    # Load model
     # -------------------------------------------------
     model = PairwiseScorer()
     state = torch.load(path, map_location=device)
 
-    # -------------------------------------------------
-    # Handle training checkpoint vs raw state_dict
-    # -------------------------------------------------
     if isinstance(state, dict) and "state_dict" in state:
-        # training checkpoint
-        model.load_state_dict(state["state_dict"])
-    elif isinstance(state, dict):
-        # plain state_dict
-        model.load_state_dict(state)
-    else:
-        # full serialized model (fallback)
-        model = state
+        state = state["state_dict"]
 
-
+    model.load_state_dict(state, strict=True)
     model.to(device)
     model.eval()
+
     return model
 
 

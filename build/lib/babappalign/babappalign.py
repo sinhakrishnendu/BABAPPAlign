@@ -7,11 +7,11 @@ BABAPPAlign
 
 Embedding-first progressive multiple sequence alignment engine.
 
-State-of-the-art alignment core with:
+Core characteristics:
 - Learned residue–residue scoring (mandatory)
 - Column-aware profile scoring
-- Proper gap-open vs gap-extend handling
-- HMM-like diagonal continuation prior
+- Explicit gap-open vs gap-extend handling
+- Conservative diagonal continuation prior
 """
 
 from __future__ import annotations
@@ -119,11 +119,19 @@ def write_fasta(ids, seqs, path: Path):
 # NW profile vs sequence
 # =========================
 
-def nw_align_profile_seq(profile, sid, seq, emb_map, model, device,
-                         gap_open, gap_extend):
+def nw_align_profile_seq(
+    profile,
+    sid,
+    seq,
+    emb_map,
+    model,
+    device,
+    gap_open,
+    gap_extend,
+):
     from babappalign.babappascore import batched_score
 
-    # --- SOTA priors ---
+    # Conservative priors
     DIAG_CONTINUATION_BONUS = 0.2
     COLUMN_CONFIDENCE_FLOOR = 0.3
 
@@ -141,9 +149,7 @@ def nw_align_profile_seq(profile, sid, seq, emb_map, model, device,
         S[0, j] = gap_open + (j - 1) * gap_extend
         T[0, j] = 2
 
-    # -------------------------
     # DP fill
-    # -------------------------
     for i in range(1, m + 1):
         col = profile.get_column(i - 1)
         for j in range(1, n + 1):
@@ -161,14 +167,14 @@ def nw_align_profile_seq(profile, sid, seq, emb_map, model, device,
                         model,
                         e1.unsqueeze(0),
                         e2.unsqueeze(0),
-                        device
+                        device,
                     )[0, 0]
                 )
 
             if scores:
-                raw_score = float(np.mean(scores))
-                col_conf = max(nongap / len(profile), COLUMN_CONFIDENCE_FLOOR)
-                match_score = raw_score * col_conf
+                raw = float(np.mean(scores))
+                conf = max(nongap / len(profile), COLUMN_CONFIDENCE_FLOOR)
+                match_score = raw * conf
             else:
                 match_score = gap_extend
 
@@ -178,23 +184,18 @@ def nw_align_profile_seq(profile, sid, seq, emb_map, model, device,
                 + (DIAG_CONTINUATION_BONUS if T[i - 1, j - 1] == 0 else 0.0)
             )
 
-            delete = (
-                S[i - 1, j]
-                + (gap_extend if T[i - 1, j] == 1 else gap_open)
+            delete = S[i - 1, j] + (
+                gap_extend if T[i - 1, j] == 1 else gap_open
             )
-
-            insert = (
-                S[i, j - 1]
-                + (gap_extend if T[i, j - 1] == 2 else gap_open)
+            insert = S[i, j - 1] + (
+                gap_extend if T[i, j - 1] == 2 else gap_open
             )
 
             best = max(match, delete, insert)
             S[i, j] = best
             T[i, j] = 0 if best == match else (1 if best == delete else 2)
 
-    # -------------------------
     # Traceback
-    # -------------------------
     new_seqs = [""] * len(profile)
     new_idxs = [[] for _ in profile]
     new_seq, new_idx = [], []
@@ -235,13 +236,18 @@ def nw_align_profile_seq(profile, sid, seq, emb_map, model, device,
 # Progressive
 # =========================
 
-def progressive_align(ids, seqs, emb_map, model, device,
-                      gap_open, gap_extend):
+def progressive_align(ids, seqs, emb_map, model, device, gap_open, gap_extend):
     prof = Profile([ids[0]], [seqs[0]])
     for sid, seq in zip(ids[1:], seqs[1:]):
         prof = nw_align_profile_seq(
-            prof, sid, seq, emb_map, model, device,
-            gap_open, gap_extend
+            prof,
+            sid,
+            seq,
+            emb_map,
+            model,
+            device,
+            gap_open,
+            gap_extend,
         )
     return prof.ids, prof.seqs
 
@@ -279,11 +285,17 @@ def cli():
             torch.save(emb.cpu(), f)
         emb_map[sid] = emb.to(device)
 
+    # Model resolution is handled lazily inside safe_load_model()
     model = safe_load_model(args.model, device)
 
     out_ids, out_seqs = progressive_align(
-        ids, seqs, emb_map, model, device,
-        args.gap_open, args.gap_extend
+        ids,
+        seqs,
+        emb_map,
+        model,
+        device,
+        args.gap_open,
+        args.gap_extend,
     )
 
     write_fasta(out_ids, out_seqs, Path(args.output))

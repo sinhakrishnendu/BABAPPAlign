@@ -7,6 +7,7 @@ babappalign/babappalign.py
 babappalign/babappascore.py
 babappalign/cli.py
 babappalign/column_model.py
+babappalign/embeddings.py
 babappalign/pairwise_model.py
 babappalign/utils.py
 babappalign.egg-info/PKG-INFO
@@ -15,6 +16,4 @@ babappalign.egg-info/dependency_links.txt
 babappalign.egg-info/entry_points.txt
 babappalign.egg-info/requires.txt
 babappalign.egg-info/top_level.txt
-babappalign/models/__init__.py
-babappalign/models/babappascore.pt
 tests/test_smoke_msa.py

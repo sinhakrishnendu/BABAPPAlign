@@ -50,7 +50,7 @@ def run_babappalign(name, seqs):
 
     try:
         subprocess.run(
-            ["babappalign", fasta, "-o", out, "--device", "cpu"],
+            ["babappalign", fasta, "-o", out, "--device", "cuda"],
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
