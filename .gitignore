@@ -1,23 +1,32 @@
-adversarial_runs/
-compare_runs/
-*.aln
-__pycache__/
-*.pyc
-babappalign/models/
-# Python build artifacts
+# Python bytecode
 __pycache__/
 *.pyc
 *.pyo
-*.pyd
-*.egg-info/
+
+# macOS metadata
+.DS_Store
+._*
+
+# Build / packaging artifacts
 build/
 dist/
+*.egg-info/
 
-# Test outputs
-adversarial_runs/
-results/
+# PyTorch models / embeddings (not distributed)
+*.pt
+*.pth
+
+# Caches
+.cache/
+**/.cache/
+
+# Data / benchmarks / experiments
 data/
-*.dnd
+results/
+result_balibase/
+compare_runs/
+sanity_runs/
+adversarial_runs/
 
-# Conda
-.conda/
+# Logs
+*.log
