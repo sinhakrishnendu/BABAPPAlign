@@ -1,3 +1,48 @@
 [build-system]
-requires = ["setuptools>=61", "wheel"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "babappalign"
+version = "1.0.6"
+description = "Embedding-first deep learning multiple sequence alignment engine with affine-gap DP"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+  { name = "Krishnendu Sinha" }
+]
+requires-python = ">=3.9,<3.13"
+
+dependencies = [
+  "numpy",
+  "scipy",
+  "pandas",
+  "biopython",
+  "tqdm",
+  "torch>=1.12",
+  "transformers>=4.30",
+  "fair-esm"
+]
+
+keywords = [
+  "bioinformatics",
+  "multiple-sequence-alignment",
+  "protein-alignment",
+  "deep-learning",
+  "esm"
+]
+
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Topic :: Scientific/Engineering :: Bio-Informatics"
+]
+
+[project.urls]
+Homepage = "https://github.com/sinhakrishnendu/BABAPPAlign"
+Repository = "https://github.com/sinhakrishnendu/BABAPPAlign"
+Issues = "https://github.com/sinhakrishnendu/BABAPPAlign/issues"
+DOI = "https://doi.org/10.5281/zenodo.17934124"
+
+[project.scripts]
+babappalign = "babappalign.cli:main"
