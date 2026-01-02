@@ -5,15 +5,16 @@
 BABAPPAlign
 ===========
 
-Embedding-first progressive multiple sequence alignment engine with:
+Embedding-first progressive multiple sequence alignment engine
+with true affine-gap dynamic programming (Gotoh).
 
-- True affine-gap DP (Gotoh)
-- Learned residue–residue scoring
-- Distance-based Neighbor Joining guide tree
-- Residue-level bootstrap + majority-rule consensus
-- Optimized symmetric profile–profile alignment
+Key properties:
+- STRICT learned residue-level scoring (mandatory)
+- Column-aware profile scoring
+- True affine gap penalties
+- Batched neural inference (outside DP)
 
-Guide tree is a computational heuristic, not a phylogeny.
+If babappascorer is unavailable → HARD FAIL.
 """
 
 from __future__ import annotations
@@ -25,6 +26,74 @@ from collections import Counter
 
 import numpy as np
 import torch
+
+
+# ============================================================
+# STRICT SCORER ENFORCEMENT (MANDATORY)
+# ============================================================
+
+try:
+    from babappalign.babappascore import (
+        embed_sequence,
+        batched_score,
+        safe_load_model,
+    )
+except Exception as e:
+    raise RuntimeError(
+        "\n[FATAL] babappascorer.py is REQUIRED but could not be loaded.\n"
+        "BABAPPAlign will NOT fall back to any other scorer.\n\n"
+        f"Original error:\n{e}\n"
+    )
+
+
+# ============================================================
+# Cache helpers
+# ============================================================
+
+def get_cache_dir(subdir: str) -> Path:
+    base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    d = base / "babappalign" / subdir
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def resolve_model_path(model_arg: str) -> Path:
+    """
+    Resolve --model argument.
+
+    Accepts:
+      - model name (e.g. 'babappascore')
+      - filename (e.g. 'babappascore.pt')
+      - explicit path
+    """
+    if os.path.sep in model_arg or model_arg.startswith("."):
+        path = Path(model_arg).expanduser().resolve()
+    else:
+        name = model_arg
+        if not name.endswith(".pt"):
+            name += ".pt"
+        path = get_cache_dir("models") / name
+
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"\n[FATAL] Scoring model not found:\n"
+            f"  {path}\n\n"
+            f"Download the model from Zenodo and place it in:\n"
+            f"  {get_cache_dir('models')}\n"
+        )
+    return path
+
+
+def sha256sum(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def seq_hash(seq: str) -> str:
+    return hashlib.sha1(seq.encode()).hexdigest()
 
 
 # ============================================================
@@ -42,6 +111,16 @@ class Profile:
 
     def __len__(self):
         return len(self.seqs)
+
+
+# ============================================================
+# Device
+# ============================================================
+
+def resolve_device(user_choice):
+    if user_choice == "cuda" and torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
 
 
 # ============================================================
@@ -75,246 +154,160 @@ def write_fasta(ids, seqs, path: Path):
 
 
 # ============================================================
-# Embeddings & distances
+# Column embeddings
 # ============================================================
 
-def sequence_embedding(res_emb: torch.Tensor) -> torch.Tensor:
-    return res_emb.mean(dim=0)
+def compute_column_embeddings(profile: Profile, emb_map):
+    col_embs = []
+    conf = []
 
+    for i in range(profile.length):
+        embs = []
+        nongap = 0
+        for sid, seq, idxs in zip(profile.ids, profile.seqs, profile.idxs):
+            if seq[i] != "-":
+                embs.append(emb_map[sid][idxs[i]])
+                nongap += 1
 
-def cosine_distance_matrix(seq_embs: Dict[str, torch.Tensor]):
-    ids = list(seq_embs.keys())
-    X = torch.stack([seq_embs[i] for i in ids])
-    X = X / X.norm(dim=1, keepdim=True)
-    return (1.0 - X @ X.T).cpu().numpy(), ids
+        if embs:
+            col_embs.append(torch.stack(embs).mean(dim=0))
+            conf.append(max(nongap / len(profile), 0.3))
+        else:
+            col_embs.append(None)
+            conf.append(0.0)
 
-
-# ============================================================
-# Neighbor Joining (FIXED)
-# ============================================================
-
-Tree = Union[str, Tuple["Tree", "Tree"]]
-
-
-def neighbor_joining(D: np.ndarray, labels: List[str]) -> Tree:
-    D = D.copy()
-    clusters = {i: labels[i] for i in range(len(labels))}
-    active = list(range(len(labels)))
-
-    while len(active) > 2:
-        n = len(active)
-        r = {i: sum(D[i, j] for j in active) for i in active}
-
-        i, j = min(
-            ((i, j) for i in active for j in active if i < j),
-            key=lambda x: (n - 2) * D[x[0], x[1]] - r[x[0]] - r[x[1]]
-        )
-
-        new = max(clusters) + 1
-        clusters[new] = (clusters[i], clusters[j])
-        D = np.pad(D, ((0, 1), (0, 1)))
-
-        for k in active:
-            if k != i and k != j:
-                D[new, k] = D[k, new] = 0.5 * (
-                    D[i, k] + D[j, k] - D[i, j]
-                )
-
-        active = [x for x in active if x not in (i, j)]
-        active.append(new)
-
-    i, j = active
-    return (clusters[i], clusters[j])
+    return col_embs, np.asarray(conf, dtype=float)
 
 
 # ============================================================
-# Bootstrap + consensus
+# Profile–sequence score matrix (NEURAL ONLY)
 # ============================================================
 
-def get_splits(tree: Tree):
-    splits = []
+def compute_profile_seq_score_matrix(
+    profile: Profile,
+    sid: str,
+    emb_map,
+    model,
+    device,
+):
+    col_embs, conf = compute_column_embeddings(profile, emb_map)
+    valid = [i for i, e in enumerate(col_embs) if e is not None]
 
-    def leaves(n):
-        if isinstance(n, str):
-            return {n}
-        return leaves(n[0]) | leaves(n[1])
+    if not valid:
+        return np.zeros((profile.length, emb_map[sid].shape[0]), dtype=float)
 
-    allL = leaves(tree)
+    A = torch.stack([col_embs[i] for i in valid]).to(device)
+    B = emb_map[sid].to(device)
 
-    def walk(n):
-        if isinstance(n, str):
-            return
-        L = leaves(n[0])
-        if 0 < len(L) < len(allL):
-            splits.append(frozenset(L))
-        walk(n[0])
-        walk(n[1])
+    S = batched_score(model, A, B, device)
 
-    walk(tree)
-    return splits
-
-
-def bootstrap_consensus(emb_map, n_boot):
-    counts = Counter()
-    ids = list(emb_map.keys())
-
-    for _ in range(n_boot):
-        boot = {
-            k: v[torch.randint(0, v.shape[0], (v.shape[0],))].mean(0)
-            for k, v in emb_map.items()
-        }
-        D, order = cosine_distance_matrix(boot)
-        t = neighbor_joining(D, order)
-        counts.update(get_splits(t))
-
-    valid = [s for s, c in counts.items() if c / n_boot >= 0.5]
-    valid.sort(key=len, reverse=True)
-
-    def build(S):
-        for s in valid:
-            if s < S:
-                return (build(s), build(S - s))
-        return next(iter(S))
-
-    return build(set(ids))
-
-
-# ============================================================
-# Profile–profile scoring (BATCHED)
-# ============================================================
-
-def compute_profile_profile_scores(A: Profile, B: Profile,
-                                   emb_map, model, device):
-    from babappalign.babappascore import batched_score
-
-    EA, EB, idxA, idxB = [], [], [], []
-
-    for i in range(A.length):
-        col = []
-        for sid, idxs in zip(A.ids, A.idxs):
-            pos = idxs[i]
-            if isinstance(pos, int) and pos >= 0:
-                col.append(emb_map[sid][pos])
-        if col:
-            EA.append(torch.stack(col).mean(0))
-            idxA.append(i)
-
-    for j in range(B.length):
-        col = []
-        for sid, idxs in zip(B.ids, B.idxs):
-            pos = idxs[j]
-            if isinstance(pos, int) and pos >= 0:
-                col.append(emb_map[sid][pos])
-        if col:
-            EB.append(torch.stack(col).mean(0))
-            idxB.append(j)
-
-    if not EA or not EB:
-        return np.zeros((A.length, B.length))
-
-    Aemb = torch.stack(EA).to(device)   # [m, d]
-    Bemb = torch.stack(EB).to(device)   # [n, d]
-
-    S = batched_score(model, Aemb, Bemb, device)
-
-    M = np.zeros((A.length, B.length))
-    for ii, i in enumerate(idxA):
-        for jj, j in enumerate(idxB):
-            M[i, j] = S[ii, jj]
+    M = np.full((profile.length, B.shape[0]), -0.7, dtype=float)
+    for k, i in enumerate(valid):
+        M[i, :] = S[k] * conf[i]
 
     return M
 
 
-
 # ============================================================
-# TRUE AFFINE GAP PROFILE–PROFILE DP (Gotoh)
+# TRUE AFFINE GAP DP (Gotoh)
 # ============================================================
 
-def align_profiles(A: Profile, B: Profile,
-                   emb_map, model, device, go, ge):
-    S = compute_profile_profile_scores(A, B, emb_map, model, device)
+def nw_align_profile_seq(
+    profile,
+    sid,
+    seq,
+    emb_map,
+    model,
+    device,
+    gap_open,
+    gap_extend,
+):
+    M_score = compute_profile_seq_score_matrix(
+        profile, sid, emb_map, model, device
+    )
 
-    LA, LB = A.length, B.length
+    m, n = profile.length, len(seq)
     NEG = -1e12
 
-    M = np.full((LA + 1, LB + 1), NEG)
-    X = np.full_like(M, NEG)
-    Y = np.full_like(M, NEG)
+    M = np.full((m + 1, n + 1), NEG, dtype=float)
+    Ix = np.full((m + 1, n + 1), NEG, dtype=float)
+    Iy = np.full((m + 1, n + 1), NEG, dtype=float)
 
-    TM = np.zeros_like(M, dtype=np.int8)
-    TX = np.zeros_like(M, dtype=np.int8)
-    TY = np.zeros_like(M, dtype=np.int8)
+    TM = np.zeros((m + 1, n + 1), dtype=np.int8)
+    TX = np.zeros((m + 1, n + 1), dtype=np.int8)
+    TY = np.zeros((m + 1, n + 1), dtype=np.int8)
 
     M[0, 0] = 0.0
 
-    for i in range(1, LA + 1):
-        X[i, 0] = go + (i - 1) * ge
+    for i in range(1, m + 1):
+        Ix[i, 0] = gap_open + (i - 1) * gap_extend
         TX[i, 0] = 1
-    for j in range(1, LB + 1):
-        Y[0, j] = go + (j - 1) * ge
+
+    for j in range(1, n + 1):
+        Iy[0, j] = gap_open + (j - 1) * gap_extend
         TY[0, j] = 2
 
-    for i in range(1, LA + 1):
-        for j in range(1, LB + 1):
-            prev = [M[i-1, j-1], X[i-1, j-1], Y[i-1, j-1]]
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+
+            prev = [M[i-1, j-1], Ix[i-1, j-1], Iy[i-1, j-1]]
             k = int(np.argmax(prev))
-            M[i, j] = prev[k] + S[i-1, j-1]
+            M[i, j] = prev[k] + M_score[i-1, j-1]
             TM[i, j] = k
 
-            if M[i-1, j] + go >= X[i-1, j] + ge:
-                X[i, j] = M[i-1, j] + go
+            if M[i-1, j] + gap_open >= Ix[i-1, j] + gap_extend:
+                Ix[i, j] = M[i-1, j] + gap_open
                 TX[i, j] = 0
             else:
-                X[i, j] = X[i-1, j] + ge
+                Ix[i, j] = Ix[i-1, j] + gap_extend
                 TX[i, j] = 1
 
-            if M[i, j-1] + go >= Y[i, j-1] + ge:
-                Y[i, j] = M[i, j-1] + go
+            if M[i, j-1] + gap_open >= Iy[i, j-1] + gap_extend:
+                Iy[i, j] = M[i, j-1] + gap_open
                 TY[i, j] = 0
             else:
-                Y[i, j] = Y[i, j-1] + ge
+                Iy[i, j] = Iy[i, j-1] + gap_extend
                 TY[i, j] = 2
 
-    i, j = LA, LB
-    state = int(np.argmax([M[i, j], X[i, j], Y[i, j]]))
+    state = int(np.argmax([M[m, n], Ix[m, n], Iy[m, n]]))
 
-    new_ids = A.ids + B.ids
-    new_seqs = [[] for _ in new_ids]
-    new_idxs = [[] for _ in new_ids]
+    new_seqs = [[] for _ in profile.seqs]
+    new_idxs = [[] for _ in profile.seqs]
+    new_seq, new_idx = [], []
 
+    i, j = m, n
     while i > 0 or j > 0:
         if state == 0:
             prev = TM[i, j]
-            for k in range(len(A)):
-                new_seqs[k].append(A.seqs[k][i-1])
-                new_idxs[k].append(A.idxs[k][i-1])
-            for k in range(len(B)):
-                new_seqs[len(A)+k].append(B.seqs[k][j-1])
-                new_idxs[len(A)+k].append(B.idxs[k][j-1])
-            i -= 1; j -= 1
-            state = prev
-
-        elif state == 1:
-            prev = TX[i, j]
-            for k in range(len(A)):
-                new_seqs[k].append(A.seqs[k][i-1])
-                new_idxs[k].append(A.idxs[k][i-1])
-            for k in range(len(B)):
-                new_seqs[len(A)+k].append("-")
-                new_idxs[len(A)+k].append(-1)
+            for k, (s, idxs) in enumerate(zip(profile.seqs, profile.idxs)):
+                new_seqs[k].append(s[i-1])
+                new_idxs[k].append(idxs[i-1])
+            new_seq.append(seq[j-1])
+            new_idx.append(j-1)
             i -= 1
-            state = prev
-
-        else:
-            prev = TY[i, j]
-            for k in range(len(A)):
-                new_seqs[k].append("-")
-                new_idxs[k].append(-1)
-            for k in range(len(B)):
-                new_seqs[len(A)+k].append(B.seqs[k][j-1])
-                new_idxs[len(A)+k].append(B.idxs[k][j-1])
             j -= 1
             state = prev
+        elif state == 1:
+            prev = TX[i, j]
+            for k, (s, idxs) in enumerate(zip(profile.seqs, profile.idxs)):
+                new_seqs[k].append(s[i-1])
+                new_idxs[k].append(idxs[i-1])
+            new_seq.append("-")
+            new_idx.append(None)
+            i -= 1
+            state = prev
+        else:
+            prev = TY[i, j]
+            for k in range(len(profile)):
+                new_seqs[k].append("-")
+                new_idxs[k].append(None)
+            new_seq.append(seq[j-1])
+            new_idx.append(j-1)
+            j -= 1
+            state = prev
+
+    new_seqs = ["".join(reversed(s)) for s in new_seqs]
+    new_idxs = [list(reversed(x)) for x in new_idxs]
 
     new_seqs = ["".join(reversed(s)) for s in new_seqs]
     new_idxs = [list(reversed(x)) for x in new_idxs]
@@ -323,15 +316,17 @@ def align_profiles(A: Profile, B: Profile,
 
 
 # ============================================================
-# Tree-guided alignment
+# Progressive
 # ============================================================
 
-def align_tree(node, seq_map, emb_map, model, device, go, ge):
-    if isinstance(node, str):
-        return Profile([node], [seq_map[node]])
-    A = align_tree(node[0], seq_map, emb_map, model, device, go, ge)
-    B = align_tree(node[1], seq_map, emb_map, model, device, go, ge)
-    return align_profiles(A, B, emb_map, model, device, go, ge)
+def progressive_align(ids, seqs, emb_map, model, device, gap_open, gap_extend):
+    prof = Profile([ids[0]], [seqs[0]])
+    for sid, seq in zip(ids[1:], seqs[1:]):
+        prof = nw_align_profile_seq(
+            prof, sid, seq, emb_map, model, device,
+            gap_open, gap_extend
+        )
+    return prof.ids, prof.seqs
 
 
 # ============================================================
@@ -342,41 +337,51 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("fasta")
     p.add_argument("-o", "--output", required=True)
-    p.add_argument("--model", default=None)
-    p.add_argument("--bootstrap", type=int, default=100)
+
+    p.add_argument(
+        "--model",
+        required=True,
+        help="Scoring model name (cache) or explicit path (.pt). MANDATORY."
+    )
+
     p.add_argument("--gap-open", type=float, default=-2.5)
     p.add_argument("--gap-extend", type=float, default=-0.7)
     p.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     args = p.parse_args()
 
-    # ---- robust device resolution
-    if args.device == "cuda" and torch.cuda.is_available():
-        device = torch.device("cuda")
-    else:
-        device = torch.device("cpu")
+    device = resolve_device(args.device)
+    print(f"[BABAPPAlign] Using device: {device}")
 
-    from babappalign.babappascore import embed_sequence, safe_load_model
+    model_path = resolve_model_path(args.model)
+    checksum = sha256sum(model_path)
 
-    ids, seqs = read_fasta(Path(args.fasta))
-    seq_map = dict(zip(ids, seqs))
+    print("[BABAPPAlign] Using scoring model:")
+    print(f"  Path    : {model_path}")
+    print(f"  SHA-256 : {checksum}")
+
+    model = safe_load_model(str(model_path), device)
+    if model is None:
+        raise RuntimeError("[FATAL] babappascorer model could not be loaded.")
 
     emb_map = {
         sid: embed_sequence(seq, device)
         for sid, seq in zip(ids, seqs)
     }
 
-    model = safe_load_model(args.model, device)
+    emb_cache = get_cache_dir("embeddings")
+    emb_map = {}
 
-    seq_embs = {sid: sequence_embedding(emb)
-                for sid, emb in emb_map.items()}
-    D, order = cosine_distance_matrix(seq_embs)
-    tree = neighbor_joining(D, order)
+    for sid, seq in zip(ids, seqs):
+        f = emb_cache / f"{seq_hash(seq)}.pt"
+        if f.exists():
+            emb = torch.load(f, map_location=device)
+        else:
+            emb = embed_sequence(seq, device)
+            torch.save(emb.cpu(), f)
+        emb_map[sid] = emb.to(device)
 
-    if args.bootstrap > 0:
-        tree = bootstrap_consensus(emb_map, args.bootstrap)
-
-    profile = align_tree(
-        tree, seq_map, emb_map, model, device,
+    out_ids, out_seqs = progressive_align(
+        ids, seqs, emb_map, model, device,
         args.gap_open, args.gap_extend
     )
 
