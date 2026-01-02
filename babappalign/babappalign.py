@@ -8,18 +8,14 @@ BABAPPAlign
 Embedding-first progressive multiple sequence alignment engine
 with true affine-gap dynamic programming (Gotoh).
 
-Key properties:
-- STRICT learned residue-level scoring (mandatory)
-- Column-aware profile scoring
-- True affine gap penalties
-- Batched neural inference (outside DP)
-
-If babappascorer is unavailable → HARD FAIL.
+STRICT learned residue-level scoring is mandatory.
 """
 
 from __future__ import annotations
 
 import argparse
+import os                      # <<< PATCH >>>
+import hashlib                 # <<< PATCH >>>
 from pathlib import Path
 from typing import Dict, List, Tuple, Union
 from collections import Counter
@@ -58,14 +54,12 @@ def get_cache_dir(subdir: str) -> Path:
 
 
 def resolve_model_path(model_arg: str) -> Path:
-    """
-    Resolve --model argument.
+    if model_arg is None:      # <<< PATCH >>>
+        raise RuntimeError(
+            "\n[FATAL] --model is mandatory.\n"
+            "BABAPPAlign does not provide any default or fallback scoring model.\n"
+        )
 
-    Accepts:
-      - model name (e.g. 'babappascore')
-      - filename (e.g. 'babappascore.pt')
-      - explicit path
-    """
     if os.path.sep in model_arg or model_arg.startswith("."):
         path = Path(model_arg).expanduser().resolve()
     else:
@@ -273,7 +267,6 @@ def nw_align_profile_seq(
 
     new_seqs = [[] for _ in profile.seqs]
     new_idxs = [[] for _ in profile.seqs]
-    new_seq, new_idx = [], []
 
     i, j = m, n
     while i > 0 or j > 0:
@@ -282,8 +275,6 @@ def nw_align_profile_seq(
             for k, (s, idxs) in enumerate(zip(profile.seqs, profile.idxs)):
                 new_seqs[k].append(s[i-1])
                 new_idxs[k].append(idxs[i-1])
-            new_seq.append(seq[j-1])
-            new_idx.append(j-1)
             i -= 1
             j -= 1
             state = prev
@@ -292,8 +283,6 @@ def nw_align_profile_seq(
             for k, (s, idxs) in enumerate(zip(profile.seqs, profile.idxs)):
                 new_seqs[k].append(s[i-1])
                 new_idxs[k].append(idxs[i-1])
-            new_seq.append("-")
-            new_idx.append(None)
             i -= 1
             state = prev
         else:
@@ -301,18 +290,13 @@ def nw_align_profile_seq(
             for k in range(len(profile)):
                 new_seqs[k].append("-")
                 new_idxs[k].append(None)
-            new_seq.append(seq[j-1])
-            new_idx.append(j-1)
             j -= 1
             state = prev
 
     new_seqs = ["".join(reversed(s)) for s in new_seqs]
     new_idxs = [list(reversed(x)) for x in new_idxs]
 
-    new_seqs = ["".join(reversed(s)) for s in new_seqs]
-    new_idxs = [list(reversed(x)) for x in new_idxs]
-
-    return Profile(new_ids, new_seqs, new_idxs)
+    return Profile(profile.ids + [sid], new_seqs, new_idxs)  # <<< PATCH >>>
 
 
 # ============================================================
@@ -349,6 +333,14 @@ def main():
     p.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     args = p.parse_args()
 
+    # <<< PATCH >>> explicit semantic enforcement
+    if args.model is None:
+        raise RuntimeError(
+            "[FATAL] --model is mandatory. No default or fallback is provided."
+        )
+
+    ids, seqs = read_fasta(Path(args.fasta))   # <<< PATCH >>>
+
     device = resolve_device(args.device)
     print(f"[BABAPPAlign] Using device: {device}")
 
@@ -362,11 +354,6 @@ def main():
     model = safe_load_model(str(model_path), device)
     if model is None:
         raise RuntimeError("[FATAL] babappascorer model could not be loaded.")
-
-    emb_map = {
-        sid: embed_sequence(seq, device)
-        for sid, seq in zip(ids, seqs)
-    }
 
     emb_cache = get_cache_dir("embeddings")
     emb_map = {}
@@ -385,7 +372,7 @@ def main():
         args.gap_open, args.gap_extend
     )
 
-    write_fasta(profile.ids, profile.seqs, Path(args.output))
+    write_fasta(out_ids, out_seqs, Path(args.output))   # <<< PATCH >>>
 
 
 if __name__ == "__main__":
