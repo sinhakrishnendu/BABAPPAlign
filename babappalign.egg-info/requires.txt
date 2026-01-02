@@ -3,5 +3,6 @@ scipy
 pandas
 biopython
 tqdm
-torch
+torch>=1.12
+transformers>=4.30
 fair-esm

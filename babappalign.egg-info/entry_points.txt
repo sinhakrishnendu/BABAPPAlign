@@ -1,3 +1,2 @@
 [console_scripts]
 babappalign = babappalign.cli:main
-babappascore = babappalign.cli:score
