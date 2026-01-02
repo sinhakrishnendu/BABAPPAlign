@@ -14,11 +14,9 @@ STRICT learned residue-level scoring is mandatory.
 from __future__ import annotations
 
 import argparse
-import os                      # <<< PATCH >>>
-import hashlib                 # <<< PATCH >>>
+import os
+import hashlib
 from pathlib import Path
-from typing import Dict, List, Tuple, Union
-from collections import Counter
 
 import numpy as np
 import torch
@@ -54,7 +52,7 @@ def get_cache_dir(subdir: str) -> Path:
 
 
 def resolve_model_path(model_arg: str) -> Path:
-    if model_arg is None:      # <<< PATCH >>>
+    if model_arg is None:
         raise RuntimeError(
             "\n[FATAL] --model is mandatory.\n"
             "BABAPPAlign does not provide any default or fallback scoring model.\n"
@@ -177,13 +175,7 @@ def compute_column_embeddings(profile: Profile, emb_map):
 # Profile–sequence score matrix (NEURAL ONLY)
 # ============================================================
 
-def compute_profile_seq_score_matrix(
-    profile: Profile,
-    sid: str,
-    emb_map,
-    model,
-    device,
-):
+def compute_profile_seq_score_matrix(profile, sid, emb_map, model, device):
     col_embs, conf = compute_column_embeddings(profile, emb_map)
     valid = [i for i, e in enumerate(col_embs) if e is not None]
 
@@ -206,16 +198,9 @@ def compute_profile_seq_score_matrix(
 # TRUE AFFINE GAP DP (Gotoh)
 # ============================================================
 
-def nw_align_profile_seq(
-    profile,
-    sid,
-    seq,
-    emb_map,
-    model,
-    device,
-    gap_open,
-    gap_extend,
-):
+def nw_align_profile_seq(profile, sid, seq, emb_map, model, device,
+                         gap_open, gap_extend):
+
     M_score = compute_profile_seq_score_matrix(
         profile, sid, emb_map, model, device
     )
@@ -223,9 +208,9 @@ def nw_align_profile_seq(
     m, n = profile.length, len(seq)
     NEG = -1e12
 
-    M = np.full((m + 1, n + 1), NEG, dtype=float)
-    Ix = np.full((m + 1, n + 1), NEG, dtype=float)
-    Iy = np.full((m + 1, n + 1), NEG, dtype=float)
+    M = np.full((m + 1, n + 1), NEG)
+    Ix = np.full((m + 1, n + 1), NEG)
+    Iy = np.full((m + 1, n + 1), NEG)
 
     TM = np.zeros((m + 1, n + 1), dtype=np.int8)
     TX = np.zeros((m + 1, n + 1), dtype=np.int8)
@@ -267,6 +252,7 @@ def nw_align_profile_seq(
 
     new_seqs = [[] for _ in profile.seqs]
     new_idxs = [[] for _ in profile.seqs]
+    new_seq, new_idx = [], []
 
     i, j = m, n
     while i > 0 or j > 0:
@@ -275,6 +261,8 @@ def nw_align_profile_seq(
             for k, (s, idxs) in enumerate(zip(profile.seqs, profile.idxs)):
                 new_seqs[k].append(s[i-1])
                 new_idxs[k].append(idxs[i-1])
+            new_seq.append(seq[j-1])
+            new_idx.append(j-1)
             i -= 1
             j -= 1
             state = prev
@@ -283,6 +271,8 @@ def nw_align_profile_seq(
             for k, (s, idxs) in enumerate(zip(profile.seqs, profile.idxs)):
                 new_seqs[k].append(s[i-1])
                 new_idxs[k].append(idxs[i-1])
+            new_seq.append("-")
+            new_idx.append(None)
             i -= 1
             state = prev
         else:
@@ -290,13 +280,19 @@ def nw_align_profile_seq(
             for k in range(len(profile)):
                 new_seqs[k].append("-")
                 new_idxs[k].append(None)
+            new_seq.append(seq[j-1])
+            new_idx.append(j-1)
             j -= 1
             state = prev
 
     new_seqs = ["".join(reversed(s)) for s in new_seqs]
     new_idxs = [list(reversed(x)) for x in new_idxs]
 
-    return Profile(profile.ids + [sid], new_seqs, new_idxs)  # <<< PATCH >>>
+    # CRITICAL FIX: append aligned new sequence
+    new_seqs.append("".join(reversed(new_seq)))
+    new_idxs.append(list(reversed(new_idx)))
+
+    return Profile(profile.ids + [sid], new_seqs, new_idxs)
 
 
 # ============================================================
@@ -321,39 +317,27 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("fasta")
     p.add_argument("-o", "--output", required=True)
-
-    p.add_argument(
-        "--model",
-        required=True,
-        help="Scoring model name (cache) or explicit path (.pt). MANDATORY."
-    )
-
+    p.add_argument("--model", required=True,
+                   help="Scoring model name or explicit path (.pt).")
     p.add_argument("--gap-open", type=float, default=-2.5)
     p.add_argument("--gap-extend", type=float, default=-0.7)
     p.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     args = p.parse_args()
 
-    # <<< PATCH >>> explicit semantic enforcement
     if args.model is None:
-        raise RuntimeError(
-            "[FATAL] --model is mandatory. No default or fallback is provided."
-        )
+        raise RuntimeError("[FATAL] --model is mandatory.")
 
-    ids, seqs = read_fasta(Path(args.fasta))   # <<< PATCH >>>
+    ids, seqs = read_fasta(Path(args.fasta))
 
     device = resolve_device(args.device)
     print(f"[BABAPPAlign] Using device: {device}")
 
     model_path = resolve_model_path(args.model)
-    checksum = sha256sum(model_path)
-
     print("[BABAPPAlign] Using scoring model:")
     print(f"  Path    : {model_path}")
-    print(f"  SHA-256 : {checksum}")
+    print(f"  SHA-256 : {sha256sum(model_path)}")
 
     model = safe_load_model(str(model_path), device)
-    if model is None:
-        raise RuntimeError("[FATAL] babappascorer model could not be loaded.")
 
     emb_cache = get_cache_dir("embeddings")
     emb_map = {}
@@ -372,7 +356,7 @@ def main():
         args.gap_open, args.gap_extend
     )
 
-    write_fasta(out_ids, out_seqs, Path(args.output))   # <<< PATCH >>>
+    write_fasta(out_ids, out_seqs, Path(args.output))
 
 
 if __name__ == "__main__":
