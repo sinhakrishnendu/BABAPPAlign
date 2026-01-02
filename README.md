@@ -32,7 +32,14 @@ and affects performance only, not correctness.
 
 ## Installation
 
-### Install from Bioconda (recommended)
+
+### Install from PyPI
+
+```bash
+pip install babappalign
+```
+
+### Install from Bioconda
 
 ```bash
 conda install -c bioconda babappalign
