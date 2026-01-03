@@ -32,7 +32,7 @@ and affects performance only, not correctness.
 
 ## Installation
 
-
+### Read INSTALL.md for detailed instruction
 ### Install from PyPI
 
 ```bash
