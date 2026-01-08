@@ -1,5 +1,5 @@
 # babappalign/pairwise_model.py
-# Publication-grade pairwise scoring model for residue–residue compatibility.
+# pairwise scoring model for residue–residue compatibility.
 # Symmetric by construction (alignment-safe).
 
 import torch
