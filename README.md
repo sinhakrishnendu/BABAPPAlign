@@ -38,13 +38,6 @@ and affects performance only, not correctness.
 ```bash
 pip install babappalign
 ```
-
-### Install from Bioconda
-
-```bash
-conda install -c bioconda babappalign
-```
-
 This installs a CPU-compatible version of BABAPPAlign.
 No GPU, CUDA, or special hardware is required.
 
