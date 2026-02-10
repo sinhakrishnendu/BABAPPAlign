@@ -4,145 +4,208 @@
 
 ## Overview
 
-**BABAPPAlign** is an embedding-first **progressive multiple sequence alignment (MSA) engine** for protein sequences.
-It integrates pretrained protein language model embeddings with a **learned neural residue–residue scoring function**
-within a **classical, exact affine-gap dynamic programming framework (Gotoh)**.
+BABAPPAlign is an embedding-first progressive multiple sequence alignment (MSA) engine
+for protein and coding nucleotide sequences.
 
-The method is designed to improve alignment accuracy while maintaining methodological transparency and
-full reproducibility. BABAPPAlign is **fully functional on CPU-only systems**; GPU acceleration is optional
-and affects performance only, not correctness.
+It integrates pretrained protein language model embeddings with a learned neural
+residue–residue scoring function within a classical, exact affine-gap dynamic
+programming framework (Gotoh).
+
+Version 1.2.0 introduces native codon alignment mode, allowing direct CDS alignment
+without requiring external PAL2NAL.
+
+BABAPPAlign is fully functional on CPU-only systems.
+GPU acceleration is optional and affects performance only, not correctness.
 
 ---
 
-## Key features
+## Key Features
 
 - Progressive multiple sequence alignment (MSA)
-- **Strict learned residue–residue scoring model (BABAPPAScore)**
-- Uses pretrained protein language model residue embeddings
+- Strict learned residue–residue scoring model (BABAPPAScore)
+- Pretrained protein language model residue embeddings
 - Column-aware profile scoring
 - True affine-gap dynamic programming (Gotoh algorithm)
 - Exact dynamic programming (no heuristics inside DP)
-- Embedding inference performed outside DP
-- Fully functional on CPU-only systems
-- Optional GPU acceleration for faster embedding and scoring
+- Neural inference performed outside DP recursion
+- Native codon alignment mode (CDS → translate → back-map)
+- Automatic frame validation in codon mode
+- CPU-only compatible
+- Optional GPU acceleration
 - Explicit model specification (no silent fallback)
-- Reproducible and Bioconda-compliant design
+- Reproducible and Zenodo-backed model distribution
 
 ---
 
 ## Installation
 
-### Read INSTALL.md for detailed instruction
-### Install from PyPI
+Install from PyPI:
 
-```bash
-pip install babappalign
-```
-This installs a CPU-compatible version of BABAPPAlign.
-No GPU, CUDA, or special hardware is required.
+    pip install babappalign
+
+This installs a CPU-compatible version.
+No GPU or CUDA is required.
 
 ---
 
-## Quick start
+## Quick Start
 
-```bash
-babappalign input.fasta -o output.aln.fasta --model babappascore
-```
+### Protein alignment (default)
 
-> **Important:**  
-> BABAPPAlign requires an external trained neural scoring model.
-> The model is **not downloaded automatically** and must be obtained explicitly (see below).
+    babappalign input.fasta --model babappascore
 
----
+Output:
 
-## How BABAPPAlign works
-
-1. **Residue embedding**  
-   Each protein sequence is converted into residue-level embeddings using a pretrained protein language model.
-
-2. **Learned residue scoring**  
-   Residue compatibility is evaluated using a pretrained neural scoring model (**BABAPPAScore**),
-   replacing traditional substitution matrices.
-
-3. **Progressive alignment**  
-   Sequences are progressively aligned using **exact affine-gap dynamic programming (Gotoh)**.
-   Neural inference is performed outside the DP recursion to preserve correctness.
-
-The progressive ordering is a computational heuristic and is **not interpreted as a phylogeny**.
+    input.protein.aln.fasta
 
 ---
 
-## Model weights (required)
+### Codon alignment (v1.2.0)
 
-BABAPPAlign requires a trained neural residue-level scoring model (**BABAPPAScore**),
-which is distributed separately via Zenodo.
+    babappalign cds.fasta --model babappascore --mode codon
 
-**Concept DOI (all versions):**  
-https://doi.org/10.5281/zenodo.18053200  
+Outputs:
 
-Version-specific DOIs are provided on Zenodo for exact reproducibility.
+    cds.protein.aln.fasta
+    cds.codon.aln.fasta
 
-### Download and use
-
-```bash
-# 1. Download the model (one-time)
-mkdir -p ~/.cache/babappalign/models
-
-wget https://zenodo.org/record/18053201/files/babappascore.pt      -O ~/.cache/babappalign/models/babappascore.pt
-
-# 2a. Run BABAPPAlign using the cached model name (recommended)
-babappalign input.fasta -o aligned.fasta --model babappascore
-
-# 2b. OR run BABAPPAlign using an explicit model path (equivalent)
-babappalign input.fasta -o aligned.fasta \
-  --model ~/.cache/babappalign/models/babappascore.pt
-```
-
-At runtime, BABAPPAlign prints the resolved model path and a SHA-256 checksum to ensure
-transparent and reproducible model usage.
+No -o option is required.
+Output filenames are generated automatically.
 
 ---
 
-## CPU and GPU execution
+## Codon Mode Details
+
+When --mode codon is enabled:
+
+1. CDS sequences are validated:
+   - Length divisible by 3
+   - No internal stop codons
+   - Valid nucleotide alphabet
+
+2. Sequences are translated to protein.
+
+3. Alignment is performed in protein space using the learned neural scoring model.
+
+4. Aligned proteins are back-mapped to codon alignment (PAL2NAL-style logic).
+
+Gap penalties are automatically scaled in codon mode for biological consistency.
+
+No external PAL2NAL dependency is required.
+
+---
+
+## How BABAPPAlign Works
+
+1. Residue Embedding  
+   Protein sequences are converted into residue-level embeddings using a pretrained
+   protein language model.
+
+2. Learned Residue Scoring  
+   Residue compatibility is evaluated using a pretrained neural scoring model
+   (BABAPPAScore), replacing traditional substitution matrices.
+
+3. Progressive Alignment  
+   Sequences are progressively aligned using exact affine-gap dynamic programming
+   (Gotoh). Neural inference is performed outside the DP recursion to preserve
+   correctness.
+
+The progressive ordering is a computational heuristic and is not interpreted
+as a phylogeny.
+
+---
+
+## Alignment Core Integrity
+
+The alignment engine uses:
+
+- Three-state affine-gap DP (M, Ix, Iy)
+- Explicit traceback matrices
+- Exact dynamic programming
+- No heuristic shortcuts inside recursion
+
+Version 1.2.0 does not modify the alignment core logic.
+Scientific reproducibility from earlier versions is preserved.
+
+---
+
+## Model Weights (Required)
+
+BABAPPAlign requires a trained neural residue-level scoring model (BABAPPAScore),
+distributed separately via Zenodo.
+
+Concept DOI (all versions):
+
+    https://doi.org/10.5281/zenodo.18053200
+
+Download model:
+
+    mkdir -p ~/.cache/babappalign/models
+
+    wget https://zenodo.org/record/18053201/files/babappascore.pt \
+      -O ~/.cache/babappalign/models/babappascore.pt
+
+Run using cached model name:
+
+    babappalign input.fasta --model babappascore
+
+Or using explicit path:
+
+    babappalign input.fasta \
+      --model ~/.cache/babappalign/models/babappascore.pt
+
+At runtime, BABAPPAlign prints the resolved model path and checksum
+for reproducibility.
+
+---
+
+## CPU and GPU Execution
 
 BABAPPAlign produces identical alignments on CPU and GPU.
 GPU acceleration affects performance only.
 
-| Component | CPU | GPU |
-|---------|-----|-----|
-| Progressive alignment (DP) | Yes | Yes |
-| Learned scoring | Yes | Yes |
-| Embedding generation | Slower | Faster |
+Component                     CPU     GPU
+------------------------------------------------
+Progressive alignment (DP)    Yes     Yes
+Learned scoring               Yes     Yes
+Embedding generation          Slower  Faster
 
 ---
 
-## Input requirements
+## Input Requirements
 
-- Protein sequences only  
-- FASTA format  
-- No strict limits on sequence length or number (runtime depends on hardware)
+Protein mode:
+- Protein FASTA sequences
+
+Codon mode:
+- CDS nucleotide FASTA sequences
+- Length divisible by 3
+- No internal stop codons
+
+No strict limits on sequence number or length
+(runtime depends on hardware).
 
 ---
 
-## Command-line interface
+## Command Line Interface
 
-```bash
-babappalign --help
-```
+    babappalign --help
 
-Key options include:
+Key options:
 
-- `-o, --output FILE` : output alignment file  
-- `--model MODEL` : scoring model name or path (mandatory)  
-- `--gap-open FLOAT` : gap opening penalty  
-- `--gap-extend FLOAT` : gap extension penalty  
-- `--device {cpu,cuda}` : select execution device  
+    --model MODEL           (mandatory)
+    --mode {protein,codon}
+    --gap-open FLOAT
+    --gap-extend FLOAT
+    --device {cpu,cuda}
+
+Output filenames are generated automatically.
 
 ---
 
 ## License
 
-MIT License. See the `LICENSE` file for details.
+MIT License. See LICENSE file.
 
 ---
 
@@ -152,7 +215,7 @@ Manuscript in preparation.
 
 ---
 
-## Author and repository
+## Author
 
-- **Author:** Krishnendu Sinha  
-- **GitHub:** https://github.com/sinhakrishnendu/BABAPPAlign
+Krishnendu Sinha
+https://github.com/sinhakrishnendu/BABAPPAlign
