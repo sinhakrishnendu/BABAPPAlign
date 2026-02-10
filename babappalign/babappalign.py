@@ -2,11 +2,23 @@
 # -*- coding: utf-8 -*-
 
 """
-BABAPPAlign
-===========
+BABAPPAlign v1.2.0
+==================
 
 Embedding-first progressive multiple sequence alignment engine
 with true affine-gap dynamic programming (Gotoh).
+
+Modes:
+    protein (default)
+    codon   (CDS → translate → align → backmap)
+
+Outputs:
+    Protein mode:
+        <input>.protein.aln.fasta
+
+    Codon mode:
+        <input>.protein.aln.fasta
+        <input>.codon.aln.fasta
 
 STRICT learned residue-level scoring is mandatory.
 """
@@ -16,29 +28,31 @@ from __future__ import annotations
 import argparse
 import os
 import hashlib
+import warnings
 from pathlib import Path
+from typing import Dict, List
 
 import numpy as np
 import torch
 
+# Silence HuggingFace warnings only
+from transformers import logging as hf_logging
+hf_logging.set_verbosity_error()
+
+warnings.filterwarnings(
+    "ignore",
+    message="Some weights of .* were not initialized"
+)
 
 # ============================================================
-# STRICT SCORER ENFORCEMENT (MANDATORY)
+# STRICT SCORER ENFORCEMENT
 # ============================================================
 
-try:
-    from babappalign.babappascore import (
-        embed_sequence,
-        batched_score,
-        safe_load_model,
-    )
-except Exception as e:
-    raise RuntimeError(
-        "\n[FATAL] babappascorer.py is REQUIRED but could not be loaded.\n"
-        "BABAPPAlign will NOT fall back to any other scorer.\n\n"
-        f"Original error:\n{e}\n"
-    )
-
+from babappalign.babappascore import (
+    embed_sequence,
+    batched_score,
+    safe_load_model,
+)
 
 # ============================================================
 # Cache helpers
@@ -52,36 +66,17 @@ def get_cache_dir(subdir: str) -> Path:
 
 
 def resolve_model_path(model_arg: str) -> Path:
-    if model_arg is None:
-        raise RuntimeError(
-            "\n[FATAL] --model is mandatory.\n"
-            "BABAPPAlign does not provide any default or fallback scoring model.\n"
-        )
-
     if os.path.sep in model_arg or model_arg.startswith("."):
         path = Path(model_arg).expanduser().resolve()
     else:
-        name = model_arg
-        if not name.endswith(".pt"):
-            name += ".pt"
-        path = get_cache_dir("models") / name
+        if not model_arg.endswith(".pt"):
+            model_arg += ".pt"
+        path = get_cache_dir("models") / model_arg
 
     if not path.is_file():
-        raise FileNotFoundError(
-            f"\n[FATAL] Scoring model not found:\n"
-            f"  {path}\n\n"
-            f"Download the model from Zenodo and place it in:\n"
-            f"  {get_cache_dir('models')}\n"
-        )
+        raise FileNotFoundError(f"[FATAL] Scoring model not found: {path}")
+
     return path
-
-
-def sha256sum(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def seq_hash(seq: str) -> str:
@@ -89,34 +84,7 @@ def seq_hash(seq: str) -> str:
 
 
 # ============================================================
-# Profile
-# ============================================================
-
-class Profile:
-    def __init__(self, ids, seqs, idxs=None):
-        self.ids = list(ids)
-        self.seqs = list(seqs)
-        self.length = len(seqs[0])
-        self.idxs = idxs if idxs is not None else [
-            list(range(self.length)) for _ in seqs
-        ]
-
-    def __len__(self):
-        return len(self.seqs)
-
-
-# ============================================================
-# Device
-# ============================================================
-
-def resolve_device(user_choice):
-    if user_choice == "cuda" and torch.cuda.is_available():
-        return torch.device("cuda")
-    return torch.device("cpu")
-
-
-# ============================================================
-# FASTA
+# FASTA I/O
 # ============================================================
 
 def read_fasta(path: Path):
@@ -142,11 +110,93 @@ def read_fasta(path: Path):
 def write_fasta(ids, seqs, path: Path):
     with open(path, "w") as fh:
         for i, s in zip(ids, seqs):
-            fh.write(f">{i}\n{s}\n")
+            fh.write(f">{i}\n")
+            for j in range(0, len(s), 60):
+                fh.write(s[j:j+60] + "\n")
+
 
 
 # ============================================================
-# Column embeddings
+# CODON UTILITIES
+# ============================================================
+
+STOP_CODONS = {"TAA", "TAG", "TGA"}
+
+CODON_TABLE = {
+    'TTT':'F','TTC':'F','TTA':'L','TTG':'L',
+    'CTT':'L','CTC':'L','CTA':'L','CTG':'L',
+    'ATT':'I','ATC':'I','ATA':'I','ATG':'M',
+    'GTT':'V','GTC':'V','GTA':'V','GTG':'V',
+    'TCT':'S','TCC':'S','TCA':'S','TCG':'S',
+    'CCT':'P','CCC':'P','CCA':'P','CCG':'P',
+    'ACT':'T','ACC':'T','ACA':'T','ACG':'T',
+    'GCT':'A','GCC':'A','GCA':'A','GCG':'A',
+    'TAT':'Y','TAC':'Y','CAT':'H','CAC':'H',
+    'CAA':'Q','CAG':'Q','AAT':'N','AAC':'N',
+    'AAA':'K','AAG':'K','GAT':'D','GAC':'D',
+    'GAA':'E','GAG':'E','TGT':'C','TGC':'C',
+    'TGG':'W','CGT':'R','CGC':'R','CGA':'R','CGG':'R',
+    'AGT':'S','AGC':'S','AGA':'R','AGG':'R',
+    'GGT':'G','GGC':'G','GGA':'G','GGG':'G'
+}
+
+
+def validate_cds(seq: str, sid: str):
+    if len(seq) % 3 != 0:
+        raise ValueError(f"[{sid}] CDS length not multiple of 3.")
+    if not set(seq).issubset({"A","T","G","C","N"}):
+        raise ValueError(f"[{sid}] Invalid nucleotide detected.")
+    for i in range(0, len(seq) - 3, 3):
+        if seq[i:i+3] in STOP_CODONS:
+            raise ValueError(f"[{sid}] Internal stop codon detected.")
+
+
+def translate_cds(seq: str) -> str:
+    return "".join(CODON_TABLE.get(seq[i:i+3], "X")
+                   for i in range(0, len(seq), 3))
+
+
+def backmap_to_codon_alignment(aligned_prot: str, original_cds: str) -> str:
+    codon_aln = []
+    ptr = 0
+    for aa in aligned_prot:
+        if aa == "-":
+            codon_aln.append("---")
+        else:
+            codon_aln.append(original_cds[ptr:ptr+3])
+            ptr += 3
+    return "".join(codon_aln)
+
+
+# ============================================================
+# PROFILE CLASS (ORIGINAL)
+# ============================================================
+
+class Profile:
+    def __init__(self, ids, seqs, idxs=None):
+        self.ids = list(ids)
+        self.seqs = list(seqs)
+        self.length = len(seqs[0])
+        self.idxs = idxs if idxs is not None else [
+            list(range(self.length)) for _ in seqs
+        ]
+
+    def __len__(self):
+        return len(self.seqs)
+
+
+# ============================================================
+# DEVICE
+# ============================================================
+
+def resolve_device(user_choice):
+    if user_choice == "cuda" and torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
+# ============================================================
+# COLUMN EMBEDDINGS (ORIGINAL)
 # ============================================================
 
 def compute_column_embeddings(profile: Profile, emb_map):
@@ -172,7 +222,7 @@ def compute_column_embeddings(profile: Profile, emb_map):
 
 
 # ============================================================
-# Profile–sequence score matrix (NEURAL ONLY)
+# PROFILE–SEQUENCE SCORE MATRIX (ORIGINAL)
 # ============================================================
 
 def compute_profile_seq_score_matrix(profile, sid, emb_map, model, device):
@@ -195,7 +245,7 @@ def compute_profile_seq_score_matrix(profile, sid, emb_map, model, device):
 
 
 # ============================================================
-# TRUE AFFINE GAP DP (Gotoh)
+# GOTHOH DP (ORIGINAL, UNCHANGED)
 # ============================================================
 
 def nw_align_profile_seq(profile, sid, seq, emb_map, model, device,
@@ -288,7 +338,6 @@ def nw_align_profile_seq(profile, sid, seq, emb_map, model, device,
     new_seqs = ["".join(reversed(s)) for s in new_seqs]
     new_idxs = [list(reversed(x)) for x in new_idxs]
 
-    # CRITICAL FIX: append aligned new sequence
     new_seqs.append("".join(reversed(new_seq)))
     new_idxs.append(list(reversed(new_idx)))
 
@@ -296,7 +345,7 @@ def nw_align_profile_seq(profile, sid, seq, emb_map, model, device,
 
 
 # ============================================================
-# Progressive
+# PROGRESSIVE ALIGNMENT (ORIGINAL)
 # ============================================================
 
 def progressive_align(ids, seqs, emb_map, model, device, gap_open, gap_extend):
@@ -316,28 +365,38 @@ def progressive_align(ids, seqs, emb_map, model, device, gap_open, gap_extend):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("fasta")
-    p.add_argument("-o", "--output", required=True)
-    p.add_argument("--model", required=True,
-                   help="Scoring model name or explicit path (.pt).")
+    p.add_argument("--model", required=True)
+    p.add_argument("--mode", choices=["protein", "codon"], default="protein")
     p.add_argument("--gap-open", type=float, default=-2.5)
     p.add_argument("--gap-extend", type=float, default=-0.7)
     p.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     args = p.parse_args()
 
-    if args.model is None:
-        raise RuntimeError("[FATAL] --model is mandatory.")
+    input_path = Path(args.fasta)
+    stem = input_path.stem
 
-    ids, seqs = read_fasta(Path(args.fasta))
+    protein_out = input_path.with_name(f"{stem}.protein.aln.fasta")
+    codon_out = input_path.with_name(f"{stem}.codon.aln.fasta")
+
+    ids, raw_seqs = read_fasta(input_path)
+
+    cds_map: Dict[str, str] = {}
+    seqs: List[str] = []
+
+    if args.mode == "protein":
+        seqs = raw_seqs
+    else:
+        print("[BABAPPAlign] Codon mode enabled.")
+        for sid, cds in zip(ids, raw_seqs):
+            cds = cds.upper().replace("U", "T")
+            validate_cds(cds, sid)
+            cds_map[sid] = cds
+            seqs.append(translate_cds(cds))
+        args.gap_open *= 3
+        args.gap_extend *= 3
 
     device = resolve_device(args.device)
-    print(f"[BABAPPAlign] Using device: {device}")
-
-    model_path = resolve_model_path(args.model)
-    print("[BABAPPAlign] Using scoring model:")
-    print(f"  Path    : {model_path}")
-    print(f"  SHA-256 : {sha256sum(model_path)}")
-
-    model = safe_load_model(str(model_path), device)
+    model = safe_load_model(str(resolve_model_path(args.model)), device)
 
     emb_cache = get_cache_dir("embeddings")
     emb_map = {}
@@ -356,7 +415,16 @@ def main():
         args.gap_open, args.gap_extend
     )
 
-    write_fasta(out_ids, out_seqs, Path(args.output))
+    write_fasta(out_ids, out_seqs, protein_out)
+    print(f"[BABAPPAlign] Protein alignment written: {protein_out}")
+
+    if args.mode == "codon":
+        codon_aligned = [
+            backmap_to_codon_alignment(aln, cds_map[sid])
+            for sid, aln in zip(out_ids, out_seqs)
+        ]
+        write_fasta(out_ids, codon_aligned, codon_out)
+        print(f"[BABAPPAlign] Codon alignment written: {codon_out}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,827 @@
+=== ./column_model.py ===
+# babappalign/column_model.py
+import torch
+import torch.nn as nn
+
+class ColumnHead(nn.Module):
+    def __init__(self, input_dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1)
+        )
+
+    def forward(self, x):
+        return self.net(x).squeeze(1)  # logits
+
+=== ./__init__.py ===
+"""
+BABAPPAlign: Deep learning–based progressive multiple sequence alignment engine.
+"""
+
+__author__ = "Krishnendu Sinha"
+__license__ = "MIT"
+__version__ = "1.0.2"
+
+=== ./babappalign.py ===
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+BABAPPAlign
+===========
+
+Embedding-first progressive multiple sequence alignment engine
+with true affine-gap dynamic programming (Gotoh).
+
+STRICT learned residue-level scoring is mandatory.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import hashlib
+from pathlib import Path
+
+import numpy as np
+import torch
+
+
+# ============================================================
+# STRICT SCORER ENFORCEMENT (MANDATORY)
+# ============================================================
+
+try:
+    from babappalign.babappascore import (
+        embed_sequence,
+        batched_score,
+        safe_load_model,
+    )
+except Exception as e:
+    raise RuntimeError(
+        "\n[FATAL] babappascorer.py is REQUIRED but could not be loaded.\n"
+        "BABAPPAlign will NOT fall back to any other scorer.\n\n"
+        f"Original error:\n{e}\n"
+    )
+
+
+# ============================================================
+# Cache helpers
+# ============================================================
+
+def get_cache_dir(subdir: str) -> Path:
+    base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    d = base / "babappalign" / subdir
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def resolve_model_path(model_arg: str) -> Path:
+    if model_arg is None:
+        raise RuntimeError(
+            "\n[FATAL] --model is mandatory.\n"
+            "BABAPPAlign does not provide any default or fallback scoring model.\n"
+        )
+
+    if os.path.sep in model_arg or model_arg.startswith("."):
+        path = Path(model_arg).expanduser().resolve()
+    else:
+        name = model_arg
+        if not name.endswith(".pt"):
+            name += ".pt"
+        path = get_cache_dir("models") / name
+
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"\n[FATAL] Scoring model not found:\n"
+            f"  {path}\n\n"
+            f"Download the model from Zenodo and place it in:\n"
+            f"  {get_cache_dir('models')}\n"
+        )
+    return path
+
+
+def sha256sum(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def seq_hash(seq: str) -> str:
+    return hashlib.sha1(seq.encode()).hexdigest()
+
+
+# ============================================================
+# Profile
+# ============================================================
+
+class Profile:
+    def __init__(self, ids, seqs, idxs=None):
+        self.ids = list(ids)
+        self.seqs = list(seqs)
+        self.length = len(seqs[0])
+        self.idxs = idxs if idxs is not None else [
+            list(range(self.length)) for _ in seqs
+        ]
+
+    def __len__(self):
+        return len(self.seqs)
+
+
+# ============================================================
+# Device
+# ============================================================
+
+def resolve_device(user_choice):
+    if user_choice == "cuda" and torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
+# ============================================================
+# FASTA
+# ============================================================
+
+def read_fasta(path: Path):
+    ids, seqs, cur, buf = [], [], None, []
+    for line in open(path):
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith(">"):
+            if cur:
+                ids.append(cur)
+                seqs.append("".join(buf))
+            cur = line[1:].split()[0]
+            buf = []
+        else:
+            buf.append(line)
+    if cur:
+        ids.append(cur)
+        seqs.append("".join(buf))
+    return ids, seqs
+
+
+def write_fasta(ids, seqs, path: Path):
+    with open(path, "w") as fh:
+        for i, s in zip(ids, seqs):
+            fh.write(f">{i}\n{s}\n")
+
+
+# ============================================================
+# Column embeddings
+# ============================================================
+
+def compute_column_embeddings(profile: Profile, emb_map):
+    col_embs = []
+    conf = []
+
+    for i in range(profile.length):
+        embs = []
+        nongap = 0
+        for sid, seq, idxs in zip(profile.ids, profile.seqs, profile.idxs):
+            if seq[i] != "-":
+                embs.append(emb_map[sid][idxs[i]])
+                nongap += 1
+
+        if embs:
+            col_embs.append(torch.stack(embs).mean(dim=0))
+            conf.append(max(nongap / len(profile), 0.3))
+        else:
+            col_embs.append(None)
+            conf.append(0.0)
+
+    return col_embs, np.asarray(conf, dtype=float)
+
+
+# ============================================================
+# Profile–sequence score matrix (NEURAL ONLY)
+# ============================================================
+
+def compute_profile_seq_score_matrix(profile, sid, emb_map, model, device):
+    col_embs, conf = compute_column_embeddings(profile, emb_map)
+    valid = [i for i, e in enumerate(col_embs) if e is not None]
+
+    if not valid:
+        return np.zeros((profile.length, emb_map[sid].shape[0]), dtype=float)
+
+    A = torch.stack([col_embs[i] for i in valid]).to(device)
+    B = emb_map[sid].to(device)
+
+    S = batched_score(model, A, B, device)
+
+    M = np.full((profile.length, B.shape[0]), -0.7, dtype=float)
+    for k, i in enumerate(valid):
+        M[i, :] = S[k] * conf[i]
+
+    return M
+
+
+# ============================================================
+# TRUE AFFINE GAP DP (Gotoh)
+# ============================================================
+
+def nw_align_profile_seq(profile, sid, seq, emb_map, model, device,
+                         gap_open, gap_extend):
+
+    M_score = compute_profile_seq_score_matrix(
+        profile, sid, emb_map, model, device
+    )
+
+    m, n = profile.length, len(seq)
+    NEG = -1e12
+
+    M = np.full((m + 1, n + 1), NEG)
+    Ix = np.full((m + 1, n + 1), NEG)
+    Iy = np.full((m + 1, n + 1), NEG)
+
+    TM = np.zeros((m + 1, n + 1), dtype=np.int8)
+    TX = np.zeros((m + 1, n + 1), dtype=np.int8)
+    TY = np.zeros((m + 1, n + 1), dtype=np.int8)
+
+    M[0, 0] = 0.0
+
+    for i in range(1, m + 1):
+        Ix[i, 0] = gap_open + (i - 1) * gap_extend
+        TX[i, 0] = 1
+
+    for j in range(1, n + 1):
+        Iy[0, j] = gap_open + (j - 1) * gap_extend
+        TY[0, j] = 2
+
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+
+            prev = [M[i-1, j-1], Ix[i-1, j-1], Iy[i-1, j-1]]
+            k = int(np.argmax(prev))
+            M[i, j] = prev[k] + M_score[i-1, j-1]
+            TM[i, j] = k
+
+            if M[i-1, j] + gap_open >= Ix[i-1, j] + gap_extend:
+                Ix[i, j] = M[i-1, j] + gap_open
+                TX[i, j] = 0
+            else:
+                Ix[i, j] = Ix[i-1, j] + gap_extend
+                TX[i, j] = 1
+
+            if M[i, j-1] + gap_open >= Iy[i, j-1] + gap_extend:
+                Iy[i, j] = M[i, j-1] + gap_open
+                TY[i, j] = 0
+            else:
+                Iy[i, j] = Iy[i, j-1] + gap_extend
+                TY[i, j] = 2
+
+    state = int(np.argmax([M[m, n], Ix[m, n], Iy[m, n]]))
+
+    new_seqs = [[] for _ in profile.seqs]
+    new_idxs = [[] for _ in profile.seqs]
+    new_seq, new_idx = [], []
+
+    i, j = m, n
+    while i > 0 or j > 0:
+        if state == 0:
+            prev = TM[i, j]
+            for k, (s, idxs) in enumerate(zip(profile.seqs, profile.idxs)):
+                new_seqs[k].append(s[i-1])
+                new_idxs[k].append(idxs[i-1])
+            new_seq.append(seq[j-1])
+            new_idx.append(j-1)
+            i -= 1
+            j -= 1
+            state = prev
+        elif state == 1:
+            prev = TX[i, j]
+            for k, (s, idxs) in enumerate(zip(profile.seqs, profile.idxs)):
+                new_seqs[k].append(s[i-1])
+                new_idxs[k].append(idxs[i-1])
+            new_seq.append("-")
+            new_idx.append(None)
+            i -= 1
+            state = prev
+        else:
+            prev = TY[i, j]
+            for k in range(len(profile)):
+                new_seqs[k].append("-")
+                new_idxs[k].append(None)
+            new_seq.append(seq[j-1])
+            new_idx.append(j-1)
+            j -= 1
+            state = prev
+
+    new_seqs = ["".join(reversed(s)) for s in new_seqs]
+    new_idxs = [list(reversed(x)) for x in new_idxs]
+
+    # CRITICAL FIX: append aligned new sequence
+    new_seqs.append("".join(reversed(new_seq)))
+    new_idxs.append(list(reversed(new_idx)))
+
+    return Profile(profile.ids + [sid], new_seqs, new_idxs)
+
+
+# ============================================================
+# Progressive
+# ============================================================
+
+def progressive_align(ids, seqs, emb_map, model, device, gap_open, gap_extend):
+    prof = Profile([ids[0]], [seqs[0]])
+    for sid, seq in zip(ids[1:], seqs[1:]):
+        prof = nw_align_profile_seq(
+            prof, sid, seq, emb_map, model, device,
+            gap_open, gap_extend
+        )
+    return prof.ids, prof.seqs
+
+
+# ============================================================
+# CLI
+# ============================================================
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("fasta")
+    p.add_argument("-o", "--output", required=True)
+    p.add_argument("--model", required=True,
+                   help="Scoring model name or explicit path (.pt).")
+    p.add_argument("--gap-open", type=float, default=-2.5)
+    p.add_argument("--gap-extend", type=float, default=-0.7)
+    p.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
+    args = p.parse_args()
+
+    if args.model is None:
+        raise RuntimeError("[FATAL] --model is mandatory.")
+
+    ids, seqs = read_fasta(Path(args.fasta))
+
+    device = resolve_device(args.device)
+    print(f"[BABAPPAlign] Using device: {device}")
+
+    model_path = resolve_model_path(args.model)
+    print("[BABAPPAlign] Using scoring model:")
+    print(f"  Path    : {model_path}")
+    print(f"  SHA-256 : {sha256sum(model_path)}")
+
+    model = safe_load_model(str(model_path), device)
+
+    emb_cache = get_cache_dir("embeddings")
+    emb_map = {}
+
+    for sid, seq in zip(ids, seqs):
+        f = emb_cache / f"{seq_hash(seq)}.pt"
+        if f.exists():
+            emb = torch.load(f, map_location=device)
+        else:
+            emb = embed_sequence(seq, device)
+            torch.save(emb.cpu(), f)
+        emb_map[sid] = emb.to(device)
+
+    out_ids, out_seqs = progressive_align(
+        ids, seqs, emb_map, model, device,
+        args.gap_open, args.gap_extend
+    )
+
+    write_fasta(out_ids, out_seqs, Path(args.output))
+
+
+if __name__ == "__main__":
+    main()
+
+=== ./embeddings.py ===
+# babappalign/embeddings.py
+"""
+ESM embedding wrapper with simple caching.
+Designed for feature-extraction mode (frozen model).
+"""
+
+import torch
+import esm
+import os
+from tqdm import tqdm
+
+def load_model(device="cpu"):
+    model, alphabet = esm.pretrained.esm2_t33_650M_UR50D()
+    model = model.eval().to(device)
+    batch_converter = alphabet.get_batch_converter()
+    return model, batch_converter
+
+def extract_embeddings_from_fasta(fasta_path, out_path, device="cpu", batch_size=8):
+    """
+    fasta_path: path to FASTA with raw sequences (ungapped)
+    out_path: torch file (.pt) saving list of tensors (per-sequence embeddings)
+    device: "mps" or "cuda" or "cpu"
+    """
+    from babappalign.utils import read_fasta
+    seqs = read_fasta(fasta_path)  # list of (id, seq)
+    model, batch_converter = load_model(device=device)
+
+    embeddings = []
+    # process in batches
+    for i in tqdm(range(0, len(seqs), batch_size)):
+        batch = seqs[i:i+batch_size]
+        labels, strs, toks = batch_converter(batch)
+        toks = toks.to(device)
+        with torch.no_grad():
+            out = model(toks, repr_layers=[33], return_contacts=False)
+            reps = out["representations"][33]
+        # extract per-sequence per-residue embeddings (remove special tokens)
+        for j, (sid, s) in enumerate(batch):
+            emb = reps[j, 1:1+len(s)].cpu()  # [L, D]
+            embeddings.append((sid, s, emb))
+    torch.save(embeddings, out_path)
+    print("Saved embeddings to", out_path)
+
+=== ./cli.py ===
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+CLI entrypoints for the BABAPPAlign toolkit.
+
+This module defines:
+
+    babappalign   → runs the progressive MSA engine
+    babappascore  → runs the deep scorer / score matrix generator
+"""
+
+from babappalign.babappalign import main as babappalign_main
+from babappalign.babappascore import cli as babappascore_cli
+
+
+def main():
+    """
+    Dispatcher for `babappalign` command.
+    """
+    babappalign_main()
+
+
+def score():
+    """
+    Dispatcher for `babappascore` command.
+    """
+    babappascore_cli()
+
+
+# Allow running: python -m babappalign.cli
+if __name__ == "__main__":
+    main()
+
+=== ./utils.py ===
+# babappalign/utils.py
+from typing import List, Tuple
+
+def read_fasta(path) -> List[Tuple[str,str]]:
+    seqs = []
+    with open(path) as f:
+        name = None
+        seq_lines = []
+        for line in f:
+            line = line.rstrip()
+            if not line:
+                continue
+            if line.startswith(">"):
+                if name is not None:
+                    seqs.append((name, "".join(seq_lines)))
+                name = line[1:].split()[0]
+                seq_lines = []
+            else:
+                seq_lines.append(line.strip())
+        if name is not None:
+            seqs.append((name, "".join(seq_lines)))
+    return seqs
+
+def write_fasta(seq_list, out_path):
+    with open(out_path, "w") as f:
+        for name, seq in seq_list:
+            f.write(f">{name}\n")
+            f.write(seq + "\n")
+
+=== ./pairwise_model.py ===
+# babappalign/pairwise_model.py
+# Publication-grade pairwise scoring model for residue–residue compatibility.
+# Symmetric by construction (alignment-safe).
+
+import torch
+import torch.nn as nn
+import torch.utils.checkpoint as checkpoint
+
+
+class PairwiseScorer(nn.Module):
+    """
+    High-quality symmetric scorer with:
+    - LayerNorm
+    - GELU activation
+    - Residual MLP blocks
+    - Gradient checkpointing support
+    - Xavier initialization
+
+    Inputs:
+        e1: [B, D]
+        e2: [B, D]
+    Output:
+        logits: [B]
+    """
+
+    def __init__(self, emb_dim=1280, checkpointing=False):
+        super().__init__()
+        self.checkpointing = checkpointing
+
+        hidden1 = 1024
+        hidden2 = 384
+        hidden3 = 96
+
+        # Symmetric feature dimension: |e1-e2| and e1*e2
+        feat_dim = 2 * emb_dim
+
+        # Input projection
+        self.in_proj = nn.Linear(feat_dim, hidden1)
+
+        # Block 1 (residual)
+        self.norm1 = nn.LayerNorm(hidden1)
+        self.fc1 = nn.Linear(hidden1, hidden1)
+
+        # Block 2
+        self.norm2 = nn.LayerNorm(hidden1)
+        self.fc2 = nn.Linear(hidden1, hidden2)
+
+        # Block 3
+        self.norm3 = nn.LayerNorm(hidden2)
+        self.fc3 = nn.Linear(hidden2, hidden3)
+
+        # Output head
+        self.out = nn.Linear(hidden3, 1)
+
+        self.act = nn.GELU()
+        self.drop1 = nn.Dropout(p=0.15)
+        self.drop2 = nn.Dropout(p=0.10)
+
+        # -------- Xavier initialization --------
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    # ---- Residual block definitions ----
+    def _block1(self, x):
+        h = self.norm1(x)
+        h = self.fc1(self.drop1(self.act(h)))
+        return x + h
+
+    def _block2(self, x):
+        h = self.norm2(x)
+        h = self.fc2(self.drop2(self.act(h)))
+        return h
+
+    def _block3(self, x):
+        h = self.norm3(x)
+        h = self.fc3(self.act(h))
+        return h
+
+    # ------------------- Forward pass -------------------
+    def forward(self, e1, e2):
+        """
+        Symmetric residue–residue scoring.
+        Ensures score(e1,e2) == score(e2,e1).
+        """
+
+        # ✅ Symmetric feature construction
+        diff = torch.abs(e1 - e2)
+        prod = e1 * e2
+        x = torch.cat([diff, prod], dim=1)
+
+        x = self.in_proj(x)
+
+        if self.checkpointing:
+            x = checkpoint.checkpoint(self._block1, x, use_reentrant=False)
+            x = checkpoint.checkpoint(self._block2, x, use_reentrant=False)
+            x = checkpoint.checkpoint(self._block3, x, use_reentrant=False)
+        else:
+            x = self._block1(x)
+            x = self._block2(x)
+            x = self._block3(x)
+
+        x = self.out(x)
+        return x.squeeze(1)
+
+=== ./babappascore.py ===
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+BABAPPAScore
+============
+
+Mandatory learned residue–residue scoring using ESM2 embeddings.
+
+- Single backend: transformers + fair-esm
+- Lazy model loading
+- CUDA → CPU fallback
+- XDG-compliant caching
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+from typing import Tuple
+
+import numpy as np
+import torch
+from transformers import AutoTokenizer, AutoModel
+
+
+_ESM2_MODEL = "facebook/esm2_t33_650M_UR50D"
+_tokenizer = None
+_esm_model = None
+
+
+# ============================================================
+# Cache utilities
+# ============================================================
+
+def get_cache_dir(subdir: str) -> Path:
+    base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    d = base / "babappalign" / subdir
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+# ============================================================
+# ESM embedding
+# ============================================================
+
+def load_esm2(device: torch.device):
+    global _tokenizer, _esm_model
+
+    if _tokenizer is not None:
+        return _tokenizer, _esm_model
+
+    print(f"[info] Loading ESM2 model: {_ESM2_MODEL}")
+    _tokenizer = AutoTokenizer.from_pretrained(_ESM2_MODEL)
+    _esm_model = AutoModel.from_pretrained(_ESM2_MODEL)
+    _esm_model.to(device).eval()
+
+    return _tokenizer, _esm_model
+
+
+def embed_sequence(seq: str, device: torch.device) -> torch.Tensor:
+    tokenizer, model = load_esm2(device)
+
+    inputs = tokenizer(seq, return_tensors="pt", add_special_tokens=True)
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+
+    with torch.no_grad():
+        out = model(**inputs)
+        hidden = out.last_hidden_state.squeeze(0)
+
+    # remove CLS and EOS
+    return hidden[1:-1].cpu()
+
+
+# ============================================================
+# Learned scorer model
+# ============================================================
+
+def safe_load_model(model_path, device, version="v1.0.4"):
+    """
+    Load BABAPPAScore model.
+
+    If model_path is None, the pretrained scorer is downloaded once
+    from the GitHub release and cached under the XDG cache.
+    """
+
+    from babappalign.pairwise_model import PairwiseScorer
+    import urllib.request
+
+    # -------------------------------------------------
+    # Resolve model path
+    # -------------------------------------------------
+    if model_path is None:
+        cache_dir = get_cache_dir("models")
+        path = cache_dir / "babappascore.pt"
+
+        if not path.exists():
+            url = (
+                "https://github.com/sinhakrishnendu/BABAPPAlign/"
+                f"releases/download/{version}/babappascore.pt"
+            )
+            print("[info] Downloading BABAPPAScore weights...")
+            urllib.request.urlretrieve(url, path)
+    else:
+        path = Path(model_path)
+
+    if not path.exists():
+        raise RuntimeError(
+            f"BABAPPAScore model not found at {path}. "
+            "Learned scoring is mandatory."
+        )
+
+    # -------------------------------------------------
+    # Load model
+    # -------------------------------------------------
+    model = PairwiseScorer()
+    state = torch.load(path, map_location=device)
+
+    if isinstance(state, dict) and "state_dict" in state:
+        state = state["state_dict"]
+
+    model.load_state_dict(state, strict=True)
+    model.to(device)
+    model.eval()
+
+    return model
+
+
+# ============================================================
+# Scoring
+# ============================================================
+
+def batched_score(model, A: torch.Tensor, B: torch.Tensor,
+                  device: torch.device, batch: int = 4096) -> np.ndarray:
+
+    A = A.to(device)
+    B = B.to(device)
+
+    m, _ = A.shape
+    n, _ = B.shape
+
+    # vectorized index grid
+    ii, jj = torch.meshgrid(
+        torch.arange(m), torch.arange(n), indexing="ij"
+    )
+    ii = ii.flatten()
+    jj = jj.flatten()
+
+    S = np.zeros((m, n), dtype=float)
+
+    ptr = 0
+    total = len(ii)
+
+    with torch.no_grad():
+        while ptr < total:
+            end = min(ptr + batch, total)
+            ai = A[ii[ptr:end]]
+            bj = B[jj[ptr:end]]
+
+            out = model(ai, bj)
+            vals = out.detach().cpu().numpy()
+
+            for k in range(end - ptr):
+                S[ii[ptr + k], jj[ptr + k]] = float(vals[k])
+
+            ptr = end
+
+    return S
+
+
+# ============================================================
+# CLI
+# ============================================================
+
+def cli():
+    p = argparse.ArgumentParser(description="BABAPPAScore: deep residue scorer")
+    p.add_argument("--seqA", required=True)
+    p.add_argument("--seqB", required=True)
+    p.add_argument("--model", default=None)
+    p.add_argument("--device", choices=["cpu", "cuda"], default=None)
+    p.add_argument("--batch", type=int, default=4096)
+    p.add_argument("--matrix", default=None)
+
+    args = p.parse_args()
+
+    device = (
+        torch.device("cuda")
+        if args.device != "cpu" and torch.cuda.is_available()
+        else torch.device("cpu")
+    )
+
+    def read_fasta(path: Path) -> str:
+        return "".join(
+            l.strip() for l in open(path) if not l.startswith(">")
+        )
+
+    seqA = read_fasta(Path(args.seqA))
+    seqB = read_fasta(Path(args.seqB))
+
+    embA = embed_sequence(seqA, device)
+    embB = embed_sequence(seqB, device)
+
+    model = safe_load_model(args.model, device)
+    M = batched_score(model, embA, embB, device, args.batch)
+
+    print(f"[done] Score matrix shape: {M.shape}")
+
+    if args.matrix:
+        np.save(args.matrix, M)
+
+
+if __name__ == "__main__":
+    cli()
+
