@@ -32,7 +32,7 @@ GPU acceleration is optional and affects performance only, not correctness.
 - Automatic frame validation in codon mode
 - CPU-only compatible
 - Optional GPU acceleration
-- Explicit model specification (no silent fallback)
+- Default model name (`babappascore`) with explicit override support
 - Reproducible and Zenodo-backed model distribution
 
 ---
@@ -52,7 +52,7 @@ No GPU or CUDA is required.
 
 ### Protein alignment (default)
 
-    babappalign input.fasta --model babappascore
+    babappalign input.fasta
 
 Output:
 
@@ -62,7 +62,7 @@ Output:
 
 ### Codon alignment (v1.2.0)
 
-    babappalign cds.fasta --model babappascore --mode codon
+    babappalign cds.fasta --mode codon
 
 Outputs:
 
@@ -71,6 +71,19 @@ Outputs:
 
 No -o option is required.
 Output filenames are generated automatically.
+
+---
+
+### Interactive mode (no arguments)
+
+    babappalign
+
+Prompts:
+
+    Sequence FASTA file:
+    Mode [protein/codon] (default: protein):
+
+The scoring model defaults to `babappascore`.
 
 ---
 
@@ -147,7 +160,7 @@ Download model:
 
 Run using cached model name:
 
-    babappalign input.fasta --model babappascore
+    babappalign input.fasta
 
 Or using explicit path:
 
@@ -193,7 +206,7 @@ No strict limits on sequence number or length
 
 Key options:
 
-    --model MODEL           (mandatory)
+    --model MODEL           (default: babappascore)
     --mode {protein,codon}
     --gap-open FLOAT
     --gap-extend FLOAT
