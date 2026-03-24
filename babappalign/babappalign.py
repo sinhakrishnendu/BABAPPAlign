@@ -364,13 +364,35 @@ def progressive_align(ids, seqs, emb_map, model, device, gap_open, gap_extend):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("fasta")
-    p.add_argument("--model", required=True)
+    p.add_argument("fasta", nargs="?")
+    p.add_argument("--model", default="babappascore")
     p.add_argument("--mode", choices=["protein", "codon"], default="protein")
     p.add_argument("--gap-open", type=float, default=-2.5)
     p.add_argument("--gap-extend", type=float, default=-0.7)
     p.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     args = p.parse_args()
+
+    if args.fasta is None:
+        while True:
+            fasta = input("Sequence FASTA file: ").strip()
+            if not fasta:
+                print("[BABAPPAlign] Please provide a FASTA file path.")
+                continue
+            if not Path(fasta).is_file():
+                print(f"[BABAPPAlign] File not found: {fasta}")
+                continue
+            args.fasta = fasta
+            break
+
+        while True:
+            mode = input("Mode [protein/codon] (default: protein): ").strip().lower()
+            if not mode:
+                args.mode = "protein"
+                break
+            if mode in {"protein", "codon"}:
+                args.mode = mode
+                break
+            print("[BABAPPAlign] Invalid mode. Choose 'protein' or 'codon'.")
 
     input_path = Path(args.fasta)
     stem = input_path.stem
