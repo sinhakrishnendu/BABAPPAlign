@@ -43,9 +43,9 @@ pip install fair-esm==2.0.0
 BABAPPAlign uses a pretrained residue-level scoring model that must be downloaded manually.
 
 mkdir -p ~/.cache/babappalign/models  
-wget https://zenodo.org/records/18053201/files/babappascorer.pt -O ~/.cache/babappalign/models/babappascorer.pt
+wget https://zenodo.org/records/18053201/files/babappascore.pt -O ~/.cache/babappalign/models/babappascore.pt
 
-The filename must be exactly babappascorer.pt.
+The filename must be exactly babappascore.pt.
 
 ## Verify installation
 
@@ -98,7 +98,7 @@ pip install fair-esm
 
 If you see an error indicating the scoring model is missing, ensure the file exists at:
 
-~/.cache/babappalign/models/babappascorer.pt
+~/.cache/babappalign/models/babappascore.pt
 
 ## Citation
 

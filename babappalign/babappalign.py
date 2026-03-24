@@ -65,16 +65,15 @@ def get_cache_dir(subdir: str) -> Path:
     return d
 
 
-def resolve_model_path(model_arg: str) -> Path:
-    if os.path.sep in model_arg or model_arg.startswith("."):
-        path = Path(model_arg).expanduser().resolve()
-    else:
-        if not model_arg.endswith(".pt"):
-            model_arg += ".pt"
-        path = get_cache_dir("models") / model_arg
+def resolve_model_path() -> Path:
+    path = get_cache_dir("models") / "babappascore.pt"
 
     if not path.is_file():
-        raise FileNotFoundError(f"[FATAL] Scoring model not found: {path}")
+        raise FileNotFoundError(
+            "[FATAL] Required BABAPPAScore model is missing.\n"
+            f"Expected file: {path}\n"
+            "Download URL: https://zenodo.org/record/18053201/files/babappascore.pt"
+        )
 
     return path
 
@@ -365,14 +364,19 @@ def progressive_align(ids, seqs, emb_map, model, device, gap_open, gap_extend):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("fasta", nargs="?")
-    p.add_argument("--model", default="babappascore")
+    p.add_argument(
+        "--i",
+        dest="interactive",
+        action="store_true",
+        help="Run in interactive mode.",
+    )
     p.add_argument("--mode", choices=["protein", "codon"], default="protein")
     p.add_argument("--gap-open", type=float, default=-2.5)
     p.add_argument("--gap-extend", type=float, default=-0.7)
     p.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     args = p.parse_args()
 
-    if args.fasta is None:
+    if args.interactive:
         while True:
             fasta = input("Sequence FASTA file: ").strip()
             if not fasta:
@@ -384,17 +388,27 @@ def main():
             args.fasta = fasta
             break
 
+        default_mode = args.mode
         while True:
-            mode = input("Mode [protein/codon] (default: protein): ").strip().lower()
+            mode = input(
+                f"Mode [protein/codon] (default: {default_mode}): "
+            ).strip().lower()
             if not mode:
-                args.mode = "protein"
+                args.mode = default_mode
                 break
             if mode in {"protein", "codon"}:
                 args.mode = mode
                 break
             print("[BABAPPAlign] Invalid mode. Choose 'protein' or 'codon'.")
+    elif args.fasta is None:
+        p.error(
+            "the following arguments are required: fasta "
+            "(or use --i for interactive mode)"
+        )
 
     input_path = Path(args.fasta)
+    if not input_path.is_file():
+        p.error(f"FASTA file not found: {input_path}")
     stem = input_path.stem
 
     protein_out = input_path.with_name(f"{stem}.protein.aln.fasta")
@@ -418,7 +432,11 @@ def main():
         args.gap_extend *= 3
 
     device = resolve_device(args.device)
-    model = safe_load_model(str(resolve_model_path(args.model)), device)
+    try:
+        model_path = resolve_model_path()
+    except FileNotFoundError as exc:
+        raise SystemExit(str(exc)) from exc
+    model = safe_load_model(str(model_path), device)
 
     emb_cache = get_cache_dir("embeddings")
     emb_map = {}

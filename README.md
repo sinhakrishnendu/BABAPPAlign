@@ -32,7 +32,7 @@ GPU acceleration is optional and affects performance only, not correctness.
 - Automatic frame validation in codon mode
 - CPU-only compatible
 - Optional GPU acceleration
-- Default model name (`babappascore`) with explicit override support
+- Mandatory `babappascore.pt` model loading (no model override)
 - Reproducible and Zenodo-backed model distribution
 
 ---
@@ -74,16 +74,19 @@ Output filenames are generated automatically.
 
 ---
 
-### Interactive mode (no arguments)
+### Interactive mode (`--i`)
 
-    babappalign
+    babappalign --i
 
 Prompts:
 
     Sequence FASTA file:
     Mode [protein/codon] (default: protein):
 
-The scoring model defaults to `babappascore`.
+The scorer is always the required `babappascore.pt` model.
+
+Without `--i`, BABAPPAlign runs in normal static CLI mode and expects
+the FASTA path directly in the command line.
 
 ---
 
@@ -158,17 +161,11 @@ Download model:
     wget https://zenodo.org/record/18053201/files/babappascore.pt \
       -O ~/.cache/babappalign/models/babappascore.pt
 
-Run using cached model name:
+BABAPPAlign always loads:
 
-    babappalign input.fasta
+    ~/.cache/babappalign/models/babappascore.pt
 
-Or using explicit path:
-
-    babappalign input.fasta \
-      --model ~/.cache/babappalign/models/babappascore.pt
-
-At runtime, BABAPPAlign prints the resolved model path and checksum
-for reproducibility.
+If this file is missing, the CLI exits explicitly with a `[FATAL]` error.
 
 ---
 
@@ -206,7 +203,7 @@ No strict limits on sequence number or length
 
 Key options:
 
-    --model MODEL           (default: babappascore)
+    --i                   interactive mode
     --mode {protein,codon}
     --gap-open FLOAT
     --gap-extend FLOAT
