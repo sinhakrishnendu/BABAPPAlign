@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: babappalign
-Version: 1.2.0
+Version: 1.3.3
 Summary: Embedding-first deep learning multiple sequence alignment engine with affine-gap DP
 Home-page: https://github.com/sinhakrishnendu/BABAPPAlign
 Author: Krishnendu Sinha
@@ -62,7 +62,7 @@ GPU acceleration is optional and affects performance only, not correctness.
 - Automatic frame validation in codon mode
 - CPU-only compatible
 - Optional GPU acceleration
-- Explicit model specification (no silent fallback)
+- Mandatory `babappascore.pt` model loading (no model override)
 - Reproducible and Zenodo-backed model distribution
 
 ---
@@ -82,7 +82,7 @@ No GPU or CUDA is required.
 
 ### Protein alignment (default)
 
-    babappalign input.fasta --model babappascore
+    babappalign input.fasta
 
 Output:
 
@@ -92,7 +92,7 @@ Output:
 
 ### Codon alignment (v1.2.0)
 
-    babappalign cds.fasta --model babappascore --mode codon
+    babappalign cds.fasta --mode codon
 
 Outputs:
 
@@ -101,6 +101,22 @@ Outputs:
 
 No -o option is required.
 Output filenames are generated automatically.
+
+---
+
+### Interactive mode (`--i`)
+
+    babappalign --i
+
+Prompts:
+
+    Sequence FASTA file:
+    Mode [protein/codon] (default: protein):
+
+The scorer is always the required `babappascore.pt` model.
+
+Without `--i`, BABAPPAlign runs in normal static CLI mode and expects
+the FASTA path directly in the command line.
 
 ---
 
@@ -175,17 +191,11 @@ Download model:
     wget https://zenodo.org/record/18053201/files/babappascore.pt \
       -O ~/.cache/babappalign/models/babappascore.pt
 
-Run using cached model name:
+BABAPPAlign always loads:
 
-    babappalign input.fasta --model babappascore
+    ~/.cache/babappalign/models/babappascore.pt
 
-Or using explicit path:
-
-    babappalign input.fasta \
-      --model ~/.cache/babappalign/models/babappascore.pt
-
-At runtime, BABAPPAlign prints the resolved model path and checksum
-for reproducibility.
+If this file is missing, the CLI exits explicitly with a `[FATAL]` error.
 
 ---
 
@@ -223,7 +233,7 @@ No strict limits on sequence number or length
 
 Key options:
 
-    --model MODEL           (mandatory)
+    --i                   interactive mode
     --mode {protein,codon}
     --gap-open FLOAT
     --gap-extend FLOAT
