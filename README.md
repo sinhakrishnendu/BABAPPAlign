@@ -223,7 +223,11 @@ MIT License. See LICENSE file.
 
 ## Citation
 
-Manuscript in preparation.
+If this software contributes to your research, please cite:
+
+Sinha K. **BABAPPAlign: A Multiple Sequence Alignment Engine with a Learned Residue-Level Scoring Function**. *bioRxiv* (2025). DOI: [10.64898/2025.12.26.696577](https://doi.org/10.64898/2025.12.26.696577)
+
+Link: [http://biorxiv.org/content/early/2025/12/29/2025.12.26.696577.abstract](http://biorxiv.org/content/early/2025/12/29/2025.12.26.696577.abstract)
 
 ---
 
