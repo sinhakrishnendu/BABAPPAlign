@@ -9,19 +9,25 @@ import esm
 import os
 from tqdm import tqdm
 
-def load_model(device="cpu"):
+from babappalign.devices import resolve_device
+
+
+def load_model(device="auto"):
+    device = resolve_device(device)
     model, alphabet = esm.pretrained.esm2_t33_650M_UR50D()
     model = model.eval().to(device)
     batch_converter = alphabet.get_batch_converter()
     return model, batch_converter
 
-def extract_embeddings_from_fasta(fasta_path, out_path, device="cpu", batch_size=8):
+
+def extract_embeddings_from_fasta(fasta_path, out_path, device="auto", batch_size=8):
     """
     fasta_path: path to FASTA with raw sequences (ungapped)
     out_path: torch file (.pt) saving list of tensors (per-sequence embeddings)
-    device: "mps" or "cuda" or "cpu"
+    device: "auto", "mps", "cuda", or "cpu"
     """
     from babappalign.utils import read_fasta
+    device = resolve_device(device)
     seqs = read_fasta(fasta_path)  # list of (id, seq)
     model, batch_converter = load_model(device=device)
 

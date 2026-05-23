@@ -9,7 +9,7 @@ Mandatory learned residue–residue scoring using ESM2 embeddings.
 
 - Single backend: transformers + fair-esm
 - Lazy model loading
-- CUDA → CPU fallback
+- CUDA / Apple Metal (MPS) → CPU fallback
 - XDG-compliant caching
 """
 
@@ -24,10 +24,13 @@ import numpy as np
 import torch
 from transformers import AutoTokenizer, AutoModel
 
+from babappalign.devices import DEVICE_CHOICES, resolve_device
+
 
 _ESM2_MODEL = "facebook/esm2_t33_650M_UR50D"
 _tokenizer = None
 _esm_model = None
+_esm_device = None
 
 
 # ============================================================
@@ -46,15 +49,19 @@ def get_cache_dir(subdir: str) -> Path:
 # ============================================================
 
 def load_esm2(device: torch.device):
-    global _tokenizer, _esm_model
+    global _tokenizer, _esm_model, _esm_device
 
     if _tokenizer is not None:
+        if _esm_device != device:
+            _esm_model.to(device)
+            _esm_device = device
         return _tokenizer, _esm_model
 
     print(f"[info] Loading ESM2 model: {_ESM2_MODEL}")
     _tokenizer = AutoTokenizer.from_pretrained(_ESM2_MODEL)
     _esm_model = AutoModel.from_pretrained(_ESM2_MODEL)
     _esm_model.to(device).eval()
+    _esm_device = device
 
     return _tokenizer, _esm_model
 
@@ -115,7 +122,7 @@ def safe_load_model(model_path, device, version="v1.0.4"):
     # Load model
     # -------------------------------------------------
     model = PairwiseScorer()
-    state = torch.load(path, map_location=device)
+    state = torch.load(path, map_location="cpu")
 
     if isinstance(state, dict) and "state_dict" in state:
         state = state["state_dict"]
@@ -178,17 +185,14 @@ def cli():
     p.add_argument("--seqA", required=True)
     p.add_argument("--seqB", required=True)
     p.add_argument("--model", default=None)
-    p.add_argument("--device", choices=["cpu", "cuda"], default=None)
+    p.add_argument("--device", choices=DEVICE_CHOICES, default="auto")
     p.add_argument("--batch", type=int, default=4096)
     p.add_argument("--matrix", default=None)
 
     args = p.parse_args()
 
-    device = (
-        torch.device("cuda")
-        if args.device != "cpu" and torch.cuda.is_available()
-        else torch.device("cpu")
-    )
+    device = resolve_device(args.device)
+    print(f"[BABAPPAScore] Using device: {device}")
 
     def read_fasta(path: Path) -> str:
         return "".join(

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-BABAPPAlign v1.2.0
+BABAPPAlign v1.4.0
 ==================
 
 Embedding-first progressive multiple sequence alignment engine
@@ -53,6 +53,7 @@ from babappalign.babappascore import (
     batched_score,
     safe_load_model,
 )
+from babappalign.devices import DEVICE_CHOICES, resolve_device
 
 # ============================================================
 # Cache helpers
@@ -182,16 +183,6 @@ class Profile:
 
     def __len__(self):
         return len(self.seqs)
-
-
-# ============================================================
-# DEVICE
-# ============================================================
-
-def resolve_device(user_choice):
-    if user_choice == "cuda" and torch.cuda.is_available():
-        return torch.device("cuda")
-    return torch.device("cpu")
 
 
 # ============================================================
@@ -362,7 +353,9 @@ def progressive_align(ids, seqs, emb_map, model, device, gap_open, gap_extend):
 # ============================================================
 
 def main():
-    p = argparse.ArgumentParser()
+    p = argparse.ArgumentParser(
+        description="BABAPPAlign: embedding-first multiple sequence alignment engine"
+    )
     p.add_argument("fasta", nargs="?")
     p.add_argument(
         "--i",
@@ -373,7 +366,7 @@ def main():
     p.add_argument("--mode", choices=["protein", "codon"], default="protein")
     p.add_argument("--gap-open", type=float, default=-2.5)
     p.add_argument("--gap-extend", type=float, default=-0.7)
-    p.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
+    p.add_argument("--device", choices=DEVICE_CHOICES, default="auto")
     args = p.parse_args()
 
     if args.interactive:
@@ -432,6 +425,7 @@ def main():
         args.gap_extend *= 3
 
     device = resolve_device(args.device)
+    print(f"[BABAPPAlign] Using device: {device}")
     try:
         model_path = resolve_model_path()
     except FileNotFoundError as exc:
@@ -444,7 +438,7 @@ def main():
     for sid, seq in zip(ids, seqs):
         f = emb_cache / f"{seq_hash(seq)}.pt"
         if f.exists():
-            emb = torch.load(f, map_location=device)
+            emb = torch.load(f, map_location="cpu")
         else:
             emb = embed_sequence(seq, device)
             torch.save(emb.cpu(), f)

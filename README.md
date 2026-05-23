@@ -13,11 +13,17 @@ It integrates pretrained protein language model embeddings with a learned neural
 residue–residue scoring function within a classical, exact affine-gap dynamic
 programming framework (Gotoh).
 
-Version 1.2.0 introduces native codon alignment mode, allowing direct CDS alignment
+Current release: 1.4.0.
+
+Version 1.4.0 adds automatic accelerator selection across CUDA, Apple Silicon
+Metal/MPS, and CPU. BABAPPAlign now probes available backends at runtime and
+selects the fastest usable device safely.
+
+Native codon alignment mode, introduced in v1.2.0, allows direct CDS alignment
 without requiring external PAL2NAL.
 
 BABAPPAlign is fully functional on CPU-only systems.
-GPU acceleration is optional and affects performance only, not correctness.
+CUDA and Apple Silicon Metal/MPS acceleration are optional and affect performance only, not correctness.
 
 ---
 
@@ -33,7 +39,8 @@ GPU acceleration is optional and affects performance only, not correctness.
 - Native codon alignment mode (CDS → translate → back-map)
 - Automatic frame validation in codon mode
 - CPU-only compatible
-- Optional GPU acceleration
+- Automatic `auto` device selection: CUDA → Apple Metal/MPS → CPU
+- Optional manual device override with `--device {auto,cpu,cuda,mps}`
 - Mandatory `babappascore.pt` model loading (no model override)
 - Reproducible and Zenodo-backed model distribution
 
@@ -45,8 +52,9 @@ Install from PyPI:
 
     pip install babappalign
 
-This installs a CPU-compatible version.
-No GPU or CUDA is required.
+BABAPPAlign remains fully functional on CPU-only systems.
+If CUDA or Apple Silicon Metal/MPS support is available through PyTorch,
+BABAPPAlign can use it automatically.
 
 ---
 
@@ -62,7 +70,7 @@ Output:
 
 ---
 
-### Codon alignment (v1.2.0)
+### Codon alignment
 
     babappalign cds.fasta --mode codon
 
@@ -142,7 +150,8 @@ The alignment engine uses:
 - Exact dynamic programming
 - No heuristic shortcuts inside recursion
 
-Version 1.2.0 does not modify the alignment core logic.
+Version 1.4.0 does not modify the affine-gap DP alignment core.
+The release changes hardware selection and packaging behavior only.
 Scientific reproducibility from earlier versions is preserved.
 
 ---
@@ -171,16 +180,32 @@ If this file is missing, the CLI exits explicitly with a `[FATAL]` error.
 
 ---
 
-## CPU and GPU Execution
+## CPU and Accelerator Execution
 
-BABAPPAlign produces identical alignments on CPU and GPU.
-GPU acceleration affects performance only.
+BABAPPAlign produces identical alignments on CPU, CUDA, and Apple Silicon Metal/MPS.
+Hardware acceleration affects performance only.
 
-Component                     CPU     GPU
-------------------------------------------------
-Progressive alignment (DP)    Yes     Yes
-Learned scoring               Yes     Yes
-Embedding generation          Slower  Faster
+The default device is `auto`. In this mode BABAPPAlign checks backends in order:
+
+1. CUDA, if PyTorch reports it available and a small runtime tensor probe succeeds
+2. Apple Silicon Metal/MPS, if PyTorch reports it available and the runtime probe succeeds
+3. CPU fallback
+
+If `--device cuda` or `--device mps` is requested but the backend is unavailable
+or fails the runtime probe, BABAPPAlign falls back to CPU with a warning.
+
+Component                     CPU     CUDA    Metal/MPS
+-------------------------------------------------------
+Progressive alignment (DP)    Yes     Yes     Yes
+Learned scoring               Yes     Yes     Yes
+Embedding generation          Slower  Faster  Faster
+
+Examples:
+
+    babappalign input.fasta
+    babappalign input.fasta --device auto
+    babappalign input.fasta --device mps
+    babappalign input.fasta --device cuda
 
 ---
 
@@ -209,7 +234,7 @@ Key options:
     --mode {protein,codon}
     --gap-open FLOAT
     --gap-extend FLOAT
-    --device {cpu,cuda}
+    --device {auto,cpu,cuda,mps}
 
 Output filenames are generated automatically.
 

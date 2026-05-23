@@ -17,10 +17,10 @@ import sys
 
 def test_babappalign_help():
     """
-    Ensure that `babappalign --help` runs successfully.
+    Ensure that the BABAPPAlign CLI help runs successfully.
     """
     result = subprocess.run(
-        ["babappalign", "--help"],
+        [sys.executable, "-m", "babappalign.cli", "--help"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -28,3 +28,4 @@ def test_babappalign_help():
 
     assert result.returncode == 0
     assert "BABAPPAlign" in result.stdout or result.stderr
+    assert "{auto,cpu,cuda,mps}" in result.stdout

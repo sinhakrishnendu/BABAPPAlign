@@ -1,13 +1,13 @@
 # Installation Guide — BABAPPAlign
 
-This document describes the supported and reproducible installation procedure for BABAPPAlign, a deep learning–based multiple sequence alignment engine.
+This document describes the supported and reproducible installation procedure for BABAPPAlign 1.4.0, a deep learning–based multiple sequence alignment engine.
 
 ## System requirements
 
-- Linux (x86_64 recommended)
-- Python 3.9–3.11 (Python 3.10 recommended)
+- Linux (x86_64 recommended) or macOS on Apple Silicon
+- Python 3.9–3.12 (Python 3.10 or 3.11 recommended)
 - Conda (Miniconda or Mambaforge)
-- Optional: CUDA-capable GPU for faster inference
+- Optional: CUDA-capable GPU or Apple Silicon Metal/MPS for faster inference
 
 ## Recommended installation (Conda + pip)
 
@@ -59,15 +59,23 @@ import babappalign
 print("BABAPPAlign installation OK")  
 EOF
 
-## GPU support (optional)
+## Hardware acceleration (optional)
 
-If a compatible GPU and CUDA-enabled PyTorch are available, BABAPPAlign will automatically use the GPU.
+If compatible accelerator support is available, BABAPPAlign will automatically prefer CUDA first, then Apple Silicon Metal/MPS, then CPU. Each accelerator must pass a small runtime tensor probe before it is selected.
 
-babappalign test.fasta -o out.fasta
+babappalign test.fasta
+
+Equivalent explicit mode:
+
+babappalign test.fasta --device auto
 
 Example output:
 
 [BABAPPAlign] Using device: cuda
+
+On Apple Silicon with MPS-enabled PyTorch, the device line is:
+
+[BABAPPAlign] Using device: mps
 
 ## Notes on dependency management
 
@@ -81,7 +89,7 @@ Therefore, fair-esm is treated as a mandatory pip-only runtime dependency. BABAP
 
 ### Why the package is not noarch
 
-Although the source code is pure Python, BABAPPAlign depends at runtime on PyTorch (architecture- and ABI-specific), ESM model loading, transformer backends, and optional GPU acceleration. Therefore, the package is intentionally not marked as noarch.
+Although the source code is pure Python, BABAPPAlign depends at runtime on PyTorch (architecture- and ABI-specific), ESM model loading, transformer backends, and optional hardware acceleration. Therefore, the package is intentionally not marked as noarch.
 
 ## Minimal installation summary
 

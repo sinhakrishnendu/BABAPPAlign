@@ -1,5 +1,5 @@
 {% set name = "babappalign" %}
-{% set version = "1.0.2" %}
+{% set version = "1.4.0" %}
 
 package:
   name: {{ name }}
@@ -7,7 +7,7 @@ package:
 
 source:
   url: https://github.com/sinhakrishnendu/BABAPPAlign/archive/refs/tags/v{{ version }}.tar.gz
-  sha256: 3e8bb02b0fa9eaef7a22b69400b285b176ae02bfd3c573428c53fd8d8e829f15
+  # Add the v1.4.0 source archive sha256 after the release tag is published.
 
 build:
   number: 0
@@ -17,20 +17,19 @@ build:
 
 requirements:
   host:
-    - python >=3.9,<3.14
+    - python >=3.9,<3.13
     - pip
     - setuptools
     - wheel
 
   run:
-    - python >=3.9,<3.14
+    - python >=3.9,<3.13
     - numpy
     - scipy
     - pandas
     - biopython
     - tqdm
     - pytorch >=1.12
-    - cpuonly
     - transformers >=4.30
     - fair-esm
 
